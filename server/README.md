@@ -66,5 +66,8 @@ The server writes per-request logs to `/server/logs/` and creates the directory 
 
 It also appends a one-line summary to `/server/logs/SLQuest_requests.log`.
 
+## Run logs
+Each server start creates a new run log file at `/server/logs/SLQuest_YYYYMMDD_HHMMSS.log` (UTC). The run log captures START/STOP events and one line per HTTP request, including `/health` and `/slquest`, with method, path, status code, and remote IP.
+
 ## Future: LLM Integration
 Set `SLQUEST_LLM_PROVIDER` (empty by default) and add a provider-specific call inside `SLQuest_QuestEngine.py` or a new module that the quest engine can call. Placeholder env vars (like `OPENAI_API_KEY`) are provided in `SLQuest.env.example`, but no LLM calls are implemented yet.

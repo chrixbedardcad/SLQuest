@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import os
 import json
 import re
+import signal
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +23,8 @@ SLQUEST_LLM_PROVIDER = os.getenv("SLQUEST_LLM_PROVIDER", "")
 PORT = int(os.getenv("PORT", "8000"))
 
 LOGS_ROOT = Path(__file__).resolve().parent / "logs"
+RUN_LOG_PATH: Path | None = None
+RUN_LOG_STOPPED = False
 
 
 def ensure_logs_root() -> None:
@@ -103,6 +107,48 @@ def log_request_to_disk(data: dict | None, raw_body: str) -> None:
 
 
 ensure_logs_root()
+RUN_LOG_PATH = LOGS_ROOT / f"SLQuest_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log"
+
+
+def SLQuest_log_run_event(
+    event: str,
+    ip: str = "-",
+    method: str = "-",
+    path: str = "-",
+    status: str = "-",
+    note: str = "",
+) -> None:
+    try:
+        if RUN_LOG_PATH is None:
+            return
+        timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        message = (
+            f"[{timestamp}] EVENT={event} ip={ip} method={method} "
+            f"path={path} status={status} note=\"{note}\""
+        )
+        with RUN_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(message + "\n")
+    except Exception:
+        return
+
+
+def log_run_stop_once(note: str = "") -> None:
+    global RUN_LOG_STOPPED
+    if RUN_LOG_STOPPED:
+        return
+    RUN_LOG_STOPPED = True
+    SLQuest_log_run_event("STOP", note=note)
+
+
+def handle_shutdown_signal(signum: int, frame) -> None:
+    log_run_stop_once(note=f"signal={signum}")
+    raise SystemExit
+
+
+atexit.register(log_run_stop_once)
+signal.signal(signal.SIGINT, handle_shutdown_signal)
+signal.signal(signal.SIGTERM, handle_shutdown_signal)
+SLQuest_log_run_event("START", note="server_start")
 
 
 @app.get("/health")
@@ -151,5 +197,18 @@ def slquest() -> tuple:
     return jsonify(response), 200
 
 
+@app.after_request
+def log_run_request(response):
+    ip = request.remote_addr or "-"
+    method = request.method or "-"
+    path = request.path or "-"
+    status = str(response.status_code) if response else "-"
+    SLQuest_log_run_event("REQUEST", ip=ip, method=method, path=path, status=status)
+    return response
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)
+    try:
+        app.run(host="0.0.0.0", port=PORT)
+    except KeyboardInterrupt:
+        log_run_stop_once(note="keyboard_interrupt")
