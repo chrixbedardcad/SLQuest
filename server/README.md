@@ -18,13 +18,14 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` (local only) and edit values as needed.
+1. Copy `SLQuest.env.example` to `SLQuest.env` (local only).
+2. Edit `PORT=8001` in `SLQuest.env`.
 
 ```bash
-copy .env.example .env
+copy SLQuest.env.example SLQuest.env
 ```
 
-Run the server:
+3. Run the server:
 ```bash
 python SLQuest_ServerHTTP_API.py
 ```
@@ -52,9 +53,9 @@ curl -X POST http://localhost:8000/slquest \
 Assumes router port-forwarding: external port 80 -> internal port 8000. The LSL script must call `http://slquest.duckdns.org/slquest` without specifying `:8000`.
 
 ## Security note
-- Never commit `.env`.
+- Never commit `SLQuest.env`.
 - If you set `SLQUEST_TOKEN` on the server, also set `TOKEN` in the LSL script.
 - LSL scripts are effectively public; never embed real API keys in LSL.
 
 ## Future: LLM Integration
-Set `SLQUEST_LLM_PROVIDER` (empty by default) and add a provider-specific call inside `SLQuest_QuestEngine.py` or a new module that the quest engine can call. Placeholder env vars (like `OPENAI_API_KEY`) are provided in `.env.example`, but no LLM calls are implemented yet.
+Set `SLQUEST_LLM_PROVIDER` (empty by default) and add a provider-specific call inside `SLQuest_QuestEngine.py` or a new module that the quest engine can call. Placeholder env vars (like `OPENAI_API_KEY`) are provided in `SLQuest.env.example`, but no LLM calls are implemented yet.
