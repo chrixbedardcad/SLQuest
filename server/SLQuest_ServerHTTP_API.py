@@ -5,7 +5,7 @@ import os
 import json
 import re
 import signal
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,7 +20,7 @@ app = Flask(__name__)
 
 SLQUEST_TOKEN = os.getenv("SLQUEST_TOKEN", "")
 SLQUEST_LLM_PROVIDER = os.getenv("SLQUEST_LLM_PROVIDER", "")
-PORT = int(os.getenv("PORT", "8000"))
+PORT = int(os.getenv("PORT", "8001"))
 
 LOGS_ROOT = Path(__file__).resolve().parent / "logs"
 RUN_LOG_PATH: Path | None = None
@@ -58,8 +58,8 @@ def build_safe_headers() -> dict[str, str]:
 def log_request_to_disk(data: dict | None, raw_body: str) -> None:
     try:
         ensure_logs_root()
-        now = datetime.utcnow()
-        timestamp = now.isoformat(timespec="milliseconds") + "Z"
+        now = datetime.now(timezone.utc)
+        timestamp = now.isoformat(timespec="milliseconds")
         date_folder = LOGS_ROOT / now.strftime("%Y-%m-%d")
         date_folder.mkdir(parents=True, exist_ok=True)
 
@@ -107,7 +107,7 @@ def log_request_to_disk(data: dict | None, raw_body: str) -> None:
 
 
 ensure_logs_root()
-RUN_LOG_PATH = LOGS_ROOT / f"SLQuest_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log"
+RUN_LOG_PATH = LOGS_ROOT / f"SLQuest_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
 
 
 def SLQuest_log_run_event(
@@ -121,7 +121,7 @@ def SLQuest_log_run_event(
     try:
         if RUN_LOG_PATH is None:
             return
-        timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         message = (
             f"[{timestamp}] EVENT={event} ip={ip} method={method} "
             f"path={path} status={status} note=\"{note}\""
@@ -179,7 +179,7 @@ def slquest() -> tuple:
 
     message = message[:500]
 
-    timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     avatar_name = data.get("avatar_name", "")
     avatar_key = data.get("avatar_key", "")
     log_message = message[:120]
@@ -208,7 +208,9 @@ def log_run_request(response):
 
 
 if __name__ == "__main__":
+    from waitress import serve
+
     try:
-        app.run(host="0.0.0.0", port=PORT)
+        serve(app, host="0.0.0.0", port=PORT)
     except KeyboardInterrupt:
         log_run_stop_once(note="keyboard_interrupt")
