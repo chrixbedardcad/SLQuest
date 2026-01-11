@@ -1,47 +1,46 @@
-# SL Quest Gateway Server
+# SLQuest: Second Life Quest System
 
-A minimal Flask server that accepts requests from Second Life LSL and returns fast JSON replies.
+## What this repo is
+This project is a Second Life quest system. In-world objects or animesh use an LSL script to send HTTP requests (llHTTPRequest) to a Python server. The Python server returns short responses and basic quest state. Later, the Python server can optionally call an LLM (OpenAI/Gemini/etc.) to generate dialog and quest logic. The initial version does **not** require an LLM and runs with a built-in toy quest for immediate testing.
 
-## Requirements
+## Naming Convention
+All scripts and main entrypoints start with `SLQuest_`.
 
-- Python 3.9+
+Examples:
+- `SLQuest_ServerHTTP_API.py`
+- `SLQuest_QuestEngine.py`
+- `SLQuest_Client.lsl`
 
-## Setup (Windows)
-
+## Quick start (Windows)
 ```bash
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Set a shared token used by the LSL script:
+Copy `.env.example` to `.env` (local only) and edit values as needed.
 
 ```bash
-set SL_TOKEN=CHANGE_ME
+copy .env.example .env
 ```
 
-Run the server (binds to 0.0.0.0 and PORT env var, default 8000):
-
+Run the server:
 ```bash
-python app.py
+python SLQuest_ServerHTTP_API.py
 ```
 
-## Test with curl
-
-Health check:
-
+## Test locally with curl
 ```bash
 curl http://localhost:8000/health
 ```
 
-POST request (include token as query param):
-
 ```bash
-curl -X POST "http://localhost:8000/sl?token=CHANGE_ME" \
+curl -X POST http://localhost:8000/slquest \
   -H "Content-Type: application/json" \
   -d '{
     "avatar_name": "First Last",
     "avatar_key": "00000000-0000-0000-0000-000000000000",
+    "object_name": "QuestObject",
     "object_key": "11111111-1111-1111-1111-111111111111",
     "region": "Test Region",
     "message": "start",
@@ -49,8 +48,13 @@ curl -X POST "http://localhost:8000/sl?token=CHANGE_ME" \
   }'
 ```
 
-## Notes
+## Deployment note
+Assumes router port-forwarding: external port 80 -> internal port 8000. The LSL script must call `http://slquest.duckdns.org/slquest` without specifying `:8000`.
 
-- Router port-forwarding should map external port 80 to internal port 8000.
-- The LSL script must call `http://slquest.duckdns.org/sl` without `:8000`.
-- Keep replies fast to avoid Second Life timeouts.
+## Security note
+- Never commit `.env`.
+- If you set `SLQUEST_TOKEN` on the server, also set `TOKEN` in the LSL script.
+- LSL scripts are effectively public; never embed real API keys in LSL.
+
+## Future: LLM Integration
+Set `SLQUEST_LLM_PROVIDER` (empty by default) and add a provider-specific call inside `SLQuest_QuestEngine.py` or a new module that the quest engine can call. Placeholder env vars (like `OPENAI_API_KEY`) are provided in `.env.example`, but no LLM calls are implemented yet.
