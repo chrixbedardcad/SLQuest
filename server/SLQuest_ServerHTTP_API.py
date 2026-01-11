@@ -9,8 +9,7 @@ from flask import Flask, jsonify, request
 from SLQuest_QuestEngine import handle_message
 
 
-ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
-load_dotenv(ENV_PATH)
+load_dotenv("SLQuest.env")
 
 app = Flask(__name__)
 
