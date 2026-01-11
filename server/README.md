@@ -57,5 +57,14 @@ Assumes router port-forwarding: external port 80 -> internal port 8000. The LSL 
 - If you set `SLQUEST_TOKEN` on the server, also set `TOKEN` in the LSL script.
 - LSL scripts are effectively public; never embed real API keys in LSL.
 
+## Logging
+The server writes per-request logs to `/server/logs/` and creates the directory at startup if it is missing. Each POST to `/slquest` generates a JSON file under a date folder using the format:
+
+```
+/server/logs/YYYY-MM-DD/HHMMSS_mmm_<session_id_short>_<avatar_key_short>.json
+```
+
+It also appends a one-line summary to `/server/logs/SLQuest_requests.log`.
+
 ## Future: LLM Integration
 Set `SLQUEST_LLM_PROVIDER` (empty by default) and add a provider-specific call inside `SLQuest_QuestEngine.py` or a new module that the quest engine can call. Placeholder env vars (like `OPENAI_API_KEY`) are provided in `SLQuest.env.example`, but no LLM calls are implemented yet.
