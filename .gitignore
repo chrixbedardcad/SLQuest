@@ -1,7 +1,8 @@
 SLQuest.env
-.env
-*.env
+logs/
+chat/
 __pycache__/
 *.pyc
 venv/
+.env
 .env.local
