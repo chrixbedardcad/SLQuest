@@ -103,6 +103,15 @@ def log_unhandled_exception(request_id: str, exc: Exception) -> None:
     )
 
 
+def is_conversation_invalid(exc: Exception) -> bool:
+    message = str(exc).lower()
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 404:
+        return True
+    markers = ["conversation", "not found", "invalid", "no such", "missing"]
+    return any(marker in message for marker in markers)
+
+
 log_line(RUN_LOG_PATH, f"OpenAI SDK version: {openai_pkg.__version__}")
 
 if not OPENAI_API_KEY:
@@ -112,37 +121,87 @@ if not OPENAI_API_KEY:
     print(startup_message)
 
 
-def history_path(avatar_key: str) -> Path:
-    safe_key = avatar_key or "unknown"
-    avatar_dir = CHAT_ROOT / safe_key
-    ensure_dir(avatar_dir)
-    return avatar_dir / f"chatgpt_histo_{safe_key}.json"
+def sanitize_key(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value or "").strip("_")
+    return cleaned or "unknown"
 
 
-def load_history(avatar_key: str, last_n: int) -> list[dict[str, Any]]:
-    path = history_path(avatar_key)
+def thread_key(avatar_key: str, npc_id: str) -> str:
+    return f"{avatar_key}__{npc_id}"
+
+
+def thread_dir(avatar_key: str, npc_id: str) -> Path:
+    safe_avatar = sanitize_key(avatar_key)
+    safe_npc = sanitize_key(npc_id)
+    directory = CHAT_ROOT / safe_avatar / "threads" / safe_npc
+    ensure_dir(directory)
+    return directory
+
+
+def conversation_id_path(avatar_key: str, npc_id: str) -> Path:
+    return thread_dir(avatar_key, npc_id) / "conversation_id.txt"
+
+
+def history_jsonl_path(avatar_key: str, npc_id: str) -> Path:
+    return thread_dir(avatar_key, npc_id) / "history.jsonl"
+
+
+def thread_metadata_path(avatar_key: str, npc_id: str) -> Path:
+    return thread_dir(avatar_key, npc_id) / "thread.json"
+
+
+def load_history(avatar_key: str, npc_id: str, last_n: int) -> list[dict[str, Any]]:
+    path = history_jsonl_path(avatar_key, npc_id)
     if not path.exists():
         return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(data, list):
-        return []
-    return data[-last_n:]
+    events: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            events.append(entry)
+    return events[-last_n:]
 
 
-def append_history(avatar_key: str, events: list[dict[str, Any]]) -> None:
-    path = history_path(avatar_key)
-    existing: list[dict[str, Any]] = []
+def append_history(avatar_key: str, npc_id: str, event: dict[str, Any]) -> None:
+    path = history_jsonl_path(avatar_key, npc_id)
+    line = json.dumps(event, ensure_ascii=False)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
+def load_conversation_id(avatar_key: str, npc_id: str) -> str | None:
+    path = conversation_id_path(avatar_key, npc_id)
+    if not path.exists():
+        return None
+    content = path.read_text(encoding="utf-8").strip()
+    return content or None
+
+
+def save_conversation_id(avatar_key: str, npc_id: str, conversation_id: str) -> None:
+    path = conversation_id_path(avatar_key, npc_id)
+    path.write_text(conversation_id.strip(), encoding="utf-8")
+
+
+def delete_conversation_id(avatar_key: str, npc_id: str) -> None:
+    path = conversation_id_path(avatar_key, npc_id)
+    if path.exists():
+        path.unlink()
+
+
+def update_thread_metadata(avatar_key: str, npc_id: str, metadata: dict[str, Any]) -> None:
+    path = thread_metadata_path(avatar_key, npc_id)
+    existing: dict[str, Any] = {}
     if path.exists():
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, list):
+            if isinstance(loaded, dict):
                 existing = loaded
         except json.JSONDecodeError:
-            existing = []
-    existing.extend(events)
+            existing = {}
+    existing.update(metadata)
     path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -208,9 +267,15 @@ def build_instructions(npc_id: str) -> str:
 def build_messages(history: list[dict[str, Any]], message: str) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     for event in history:
-        role = event.get("role")
-        content = event.get("content")
-        if role in {"user", "assistant"} and isinstance(content, str):
+        direction = event.get("direction")
+        content = event.get("text")
+        if direction == "in":
+            role = "user"
+        elif direction == "out":
+            role = "assistant"
+        else:
+            role = None
+        if role and isinstance(content, str):
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": message})
     return messages
@@ -368,22 +433,55 @@ def chat() -> tuple:
         )
 
     try:
-        history = load_history(avatar_key, last_n=8)
-        messages = build_messages(history, message)
         instructions = build_instructions(npc_id)
+        thread_key_value = thread_key(avatar_key, npc_id)
+        update_thread_metadata(
+            avatar_key,
+            npc_id,
+            {
+                "thread_key": thread_key_value,
+                "avatar_uuid": avatar_key,
+                "npc_id": npc_id,
+                "last_seen": timestamp,
+            },
+        )
 
         reply_text = ""
         error_message = ""
         had_exception = False
+        use_conversation = hasattr(CLIENT, "conversations")
+        conversation_id = None
+        conversation_failure = None
 
-        try:
+        if use_conversation:
+            try:
+                conversation_id = load_conversation_id(avatar_key, npc_id)
+                if not conversation_id:
+                    conversation = CLIENT.conversations.create()
+                    conversation_id = getattr(conversation, "id", None)
+                    if conversation_id:
+                        save_conversation_id(avatar_key, npc_id, conversation_id)
+                    else:
+                        raise RuntimeError("conversation_create_empty_id")
+            except Exception as exc:
+                conversation_id = None
+                conversation_failure = exc
+                log_openai_exception(request_id, exc)
+
+        def request_openai(use_thread: bool) -> str:
             if hasattr(CLIENT, "responses"):
                 request_payload: dict[str, Any] = {
                     "model": OPENAI_MODEL,
                     "instructions": instructions,
-                    "input": messages,
                     "tool_choice": "auto",
                 }
+                if use_thread and conversation_id:
+                    request_payload["input"] = message
+                    request_payload["conversation"] = conversation_id
+                    request_payload["truncation"] = "auto"
+                else:
+                    history = load_history(avatar_key, npc_id, last_n=8)
+                    request_payload["input"] = build_messages(history, message)
                 if effective_web:
                     if allowed_domains:
                         request_payload["tools"] = [
@@ -399,18 +497,33 @@ def chat() -> tuple:
                 if effective_web:
                     sources = extract_web_search_sources(response)
                     log_web_search_sources(request_id, client_req_id, sources)
-                reply_text = (response.output_text or "").strip()
+                return (response.output_text or "").strip()
+            log_error(
+                "ERROR: OpenAI SDK outdated; missing .responses. "
+                "Upgrade via `python -m pip install -U openai`. "
+                f"request_id={request_id}"
+            )
+            history = load_history(avatar_key, npc_id, last_n=8)
+            messages = build_messages(history, message)
+            resp = CLIENT.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[{"role": "system", "content": instructions}] + messages,
+            )
+            return (resp.choices[0].message.content or "").strip()
+
+        try:
+            if conversation_id and not conversation_failure:
+                try:
+                    reply_text = request_openai(use_thread=True)
+                except Exception as exc:
+                    if is_conversation_invalid(exc):
+                        delete_conversation_id(avatar_key, npc_id)
+                        conversation_id = None
+                        reply_text = request_openai(use_thread=False)
+                    else:
+                        raise
             else:
-                log_error(
-                    "ERROR: OpenAI SDK outdated; missing .responses. "
-                    "Upgrade via `python -m pip install -U openai`. "
-                    f"request_id={request_id}"
-                )
-                resp = CLIENT.chat.completions.create(
-                    model=OPENAI_MODEL,
-                    messages=[{"role": "system", "content": instructions}] + messages,
-                )
-                reply_text = (resp.choices[0].message.content or "").strip()
+                reply_text = request_openai(use_thread=False)
             if not reply_text:
                 error_message = "empty_reply"
         except Exception as exc:
@@ -428,21 +541,31 @@ def chat() -> tuple:
 
         user_event = {
             "ts": timestamp,
-            "role": "user",
-            "content": message,
+            "direction": "in",
+            "avatar_uuid": avatar_key,
             "npc_id": npc_id,
+            "thread_key": thread_key_value,
+            "text": message,
             "object_key": object_key,
             "region": region,
+            "client_req_id": client_req_id,
+            "request_id": request_id,
         }
         assistant_event = {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "role": "assistant",
-            "content": reply_text,
+            "direction": "out",
+            "avatar_uuid": avatar_key,
             "npc_id": npc_id,
+            "thread_key": thread_key_value,
+            "text": reply_text,
             "object_key": object_key,
             "region": region,
+            "client_req_id": client_req_id,
+            "request_id": request_id,
+            "error": error_message or None,
         }
-        append_history(avatar_key, [user_event, assistant_event])
+        append_history(avatar_key, npc_id, user_event)
+        append_history(avatar_key, npc_id, assistant_event)
 
         status_code = 200 if ok else 502
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
