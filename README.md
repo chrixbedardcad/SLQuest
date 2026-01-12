@@ -15,6 +15,8 @@ Edit `SLQuest.env` with your settings:
 PORT=8001
 OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-5.2
+WEB_SEARCH_ENABLED=0
+WEB_SEARCH_ALLOWED_DOMAINS=
 ```
 
 Run the server:
@@ -68,3 +70,4 @@ curl -X POST http://localhost:8001/chat \
 
 - `logs/` and `chat/` are runtime directories and are ignored by git.
 - Do not commit `SLQuest.env` or any API keys.
+- Enabling web search is optional and can increase latency/cost; leave it off unless needed.
