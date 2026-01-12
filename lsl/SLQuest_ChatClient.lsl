@@ -2,6 +2,7 @@ string SERVER_BASE = "http://slquest.duckdns.org:8001";
 string NPC_ID = "SLQuest_DefaultNPC";
 integer SESSION_TIMEOUT_SEC = 90;
 integer IDLE_HINT_COOLDOWN_SEC = 45;
+integer DEBUG = TRUE;
 
 key gActiveAvatar = NULL_KEY;
 integer gListen = -1;
@@ -130,6 +131,18 @@ default
     http_response(key request_id, integer status, list metadata, string body)
     {
         gInFlight = FALSE;
+        string reply = llJsonGetValue(body, ["reply"]);
+
+        if (DEBUG)
+        {
+            string debugBody = body;
+            integer bodyLength = llStringLength(debugBody);
+            if (bodyLength > 300)
+            {
+                debugBody = llGetSubString(debugBody, 0, 299) + "...";
+            }
+            llOwnerSay(debugBody);
+        }
 
         if (gActiveAvatar == NULL_KEY)
         {
@@ -143,7 +156,6 @@ default
         }
         else
         {
-            string reply = llJsonGetValue(body, ["reply"]);
             if (reply == JSON_INVALID)
             {
                 llRegionSayTo(gActiveAvatar, 0, "Sorry, I glitched. Try again.");
