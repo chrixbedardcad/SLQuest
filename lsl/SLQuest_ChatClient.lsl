@@ -268,11 +268,7 @@ default
         for (index = 0; index < total_number; ++index)
         {
             key avatar = llDetectedKey(index);
-            if (GREET_SKIP_OWNER && avatar == llGetOwner())
-            {
-                continue;
-            }
-            if (canGreet(avatar, now))
+            if (!(GREET_SKIP_OWNER && avatar == llGetOwner()) && canGreet(avatar, now))
             {
                 llSay(0, "Hi " + llDetectedName(index) + ", touch me if you want to talk!");
                 markGreeted(avatar, now);
