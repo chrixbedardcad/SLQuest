@@ -55,6 +55,7 @@ curl -X POST http://localhost:8001/chat \
 
 - Ensure `SLQuest.env` lives beside `SLQuest_ServerHTTP_API.py` (same folder).
 - Check logs in `logs/`, including the per-run `logs/SLQuest_<TS>.log` and the append-only `logs/SLQuest_errors.log`.
+- If you see `".responses"` errors, run `python -m pip install -U openai`.
 - Minimal `/chat` check:
 
 ```bash

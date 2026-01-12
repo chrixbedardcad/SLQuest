@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+import openai as openai_pkg
 from openai import OpenAI
 
 
@@ -29,7 +30,7 @@ CHAT_ROOT = BASE_DIR / "chat"
 RUN_LOG_PATH = LOGS_ROOT / f"SLQuest_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
 ERROR_LOG_PATH = LOGS_ROOT / "SLQuest_errors.log"
 
-CLIENT = OpenAI()
+CLIENT = OpenAI(api_key=OPENAI_API_KEY)
 
 
 def ensure_dir(path: Path) -> None:
@@ -45,6 +46,7 @@ def log_line(path: Path, line: str) -> None:
 def log_request_line(
     endpoint: str,
     request_id: str,
+    client_req_id: str,
     avatar_key: str,
     npc_id: str,
     message: str,
@@ -55,6 +57,7 @@ def log_request_line(
     snippet = message.replace("\n", " ").replace("\r", " ")[:120]
     line = (
         f"[{timestamp}] endpoint={endpoint} request_id={request_id} "
+        f"client_req_id={client_req_id or '-'} "
         f"avatar_key={avatar_key or '-'} npc_id={npc_id or '-'} "
         f"status={status} elapsed_ms={elapsed_ms} msg=\"{snippet}\""
     )
@@ -87,6 +90,18 @@ def log_openai_exception(request_id: str, exc: Exception) -> None:
         f"message=\"{message}\" trace=\"{trace.strip()}\""
     )
 
+
+def log_unhandled_exception(request_id: str, exc: Exception) -> None:
+    trace = traceback.format_exc(limit=3)
+    message = redact_secrets(str(exc))
+    log_error(
+        "Unhandled exception "
+        f"request_id={request_id} type={type(exc).__name__} "
+        f"message=\"{message}\" trace=\"{trace.strip()}\""
+    )
+
+
+log_line(RUN_LOG_PATH, f"OpenAI SDK version: {openai_pkg.__version__}")
 
 if not OPENAI_API_KEY:
     ensure_dir(LOGS_ROOT)
@@ -182,7 +197,7 @@ def health() -> tuple[str, int]:
     status = 200
     response = ("ok", status)
     elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-    log_request_line("/health", request_id, "", "", "", str(status), elapsed_ms)
+    log_request_line("/health", request_id, "", "", "", "", str(status), elapsed_ms)
     return response
 
 
@@ -194,9 +209,10 @@ def chat() -> tuple:
     if not isinstance(data, dict):
         reply = "Sorry, I glitched. Try again."
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-        log_request_line("/chat", request_id, "", "", "", "400", elapsed_ms)
+        log_request_line("/chat", request_id, "", "", "", "", "400", elapsed_ms)
         return jsonify({"ok": False, "reply": reply, "error": "invalid_json"}), 400
 
+    client_req_id = (data.get("client_req_id") or "").strip()
     message = (data.get("message") or "").strip()
     avatar_key = (data.get("avatar_key") or "").strip()
     npc_id = (data.get("npc_id") or "SLQuest_DefaultNPC").strip()
@@ -207,13 +223,31 @@ def chat() -> tuple:
     if not message:
         reply = "Sorry, I glitched. Try again."
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-        log_request_line("/chat", request_id, avatar_key, npc_id, message, "400", elapsed_ms)
+        log_request_line(
+            "/chat",
+            request_id,
+            client_req_id,
+            avatar_key,
+            npc_id,
+            message,
+            "400",
+            elapsed_ms,
+        )
         return jsonify({"ok": False, "reply": reply, "error": "message_required"}), 400
 
     if not OPENAI_API_KEY:
         reply = "Server misconfigured (missing OPENAI_API_KEY)."
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-        log_request_line("/chat", request_id, avatar_key, npc_id, message, "500", elapsed_ms)
+        log_request_line(
+            "/chat",
+            request_id,
+            client_req_id,
+            avatar_key,
+            npc_id,
+            message,
+            "500",
+            elapsed_ms,
+        )
         log_error(f"request_id={request_id} configuration error: OPENAI_API_KEY missing")
         return (
             jsonify(
@@ -226,65 +260,117 @@ def chat() -> tuple:
             500,
         )
 
-    history = load_history(avatar_key, last_n=8)
-    messages = build_messages(history, message)
-    instructions = build_instructions(npc_id)
-
-    reply_text = ""
-    error_message = ""
-
     try:
-        response = CLIENT.responses.create(
-            model=OPENAI_MODEL,
-            instructions=instructions,
-            input=messages,
+        history = load_history(avatar_key, last_n=8)
+        messages = build_messages(history, message)
+        instructions = build_instructions(npc_id)
+
+        reply_text = ""
+        error_message = ""
+        had_exception = False
+
+        try:
+            if hasattr(CLIENT, "responses"):
+                response = CLIENT.responses.create(
+                    model=OPENAI_MODEL,
+                    instructions=instructions,
+                    input=messages,
+                )
+                reply_text = (response.output_text or "").strip()
+            else:
+                log_error(
+                    "ERROR: OpenAI SDK outdated; missing .responses. "
+                    "Upgrade via `python -m pip install -U openai`. "
+                    f"request_id={request_id}"
+                )
+                resp = CLIENT.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[{"role": "system", "content": instructions}] + messages,
+                )
+                reply_text = (resp.choices[0].message.content or "").strip()
+            if not reply_text:
+                error_message = "empty_reply"
+        except Exception as exc:
+            error_message = safe_error_reason(exc)
+            had_exception = True
+            log_openai_exception(request_id, exc)
+
+        if error_message:
+            reply_text = "Sorry, I glitched. Try again."
+            ok = False
+        else:
+            ok = True
+
+        reply_text = clamp_reply(reply_text)
+
+        user_event = {
+            "ts": timestamp,
+            "role": "user",
+            "content": message,
+            "npc_id": npc_id,
+            "object_key": object_key,
+            "region": region,
+        }
+        assistant_event = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "role": "assistant",
+            "content": reply_text,
+            "npc_id": npc_id,
+            "object_key": object_key,
+            "region": region,
+        }
+        append_history(avatar_key, [user_event, assistant_event])
+
+        status_code = 200 if ok else 502
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/chat",
+            request_id,
+            client_req_id,
+            avatar_key,
+            npc_id,
+            message,
+            str(status_code),
+            elapsed_ms,
         )
-        reply_text = (response.output_text or "").strip()
-        if not reply_text:
-            error_message = "empty_reply"
+
+        response_payload: dict[str, Any] = {
+            "ok": ok,
+            "reply": reply_text,
+            "reply_chars": len(reply_text),
+        }
+        if not ok:
+            response_payload["error"] = error_message
+            if had_exception:
+                response_payload["request_id"] = request_id
+
+        return jsonify(response_payload), status_code
     except Exception as exc:
+        log_unhandled_exception(request_id, exc)
+        reply = "Sorry, I glitched. Try again."
         error_message = safe_error_reason(exc)
-        log_openai_exception(request_id, exc)
-
-    if error_message:
-        reply_text = "Sorry, I glitched. Try again."
-        ok = False
-    else:
-        ok = True
-
-    reply_text = clamp_reply(reply_text)
-
-    user_event = {
-        "ts": timestamp,
-        "role": "user",
-        "content": message,
-        "npc_id": npc_id,
-        "object_key": object_key,
-        "region": region,
-    }
-    assistant_event = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "role": "assistant",
-        "content": reply_text,
-        "npc_id": npc_id,
-        "object_key": object_key,
-        "region": region,
-    }
-    append_history(avatar_key, [user_event, assistant_event])
-
-    status_code = 200 if ok else 502
-    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-    log_request_line("/chat", request_id, avatar_key, npc_id, message, str(status_code), elapsed_ms)
-
-    response_payload: dict[str, Any] = {
-        "ok": ok,
-        "reply": reply_text,
-        "reply_chars": len(reply_text),
-    }
-    if not ok:
-        response_payload["error"] = error_message
-
-    return jsonify(response_payload), status_code
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/chat",
+            request_id,
+            client_req_id,
+            avatar_key,
+            npc_id,
+            message,
+            "502",
+            elapsed_ms,
+        )
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reply": reply,
+                    "error": error_message,
+                    "request_id": request_id,
+                }
+            ),
+            502,
+        )
 
 
 if __name__ == "__main__":
