@@ -24,6 +24,8 @@ app = Flask(__name__)
 PORT = int(os.getenv("PORT", "8001"))
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-5.2").strip() or "gpt-5.2"
+WEB_SEARCH_ENABLED = (os.getenv("WEB_SEARCH_ENABLED") or "0").strip() == "1"
+WEB_SEARCH_ALLOWED_DOMAINS = (os.getenv("WEB_SEARCH_ALLOWED_DOMAINS") or "").strip()
 
 LOGS_ROOT = BASE_DIR / "logs"
 CHAT_ROOT = BASE_DIR / "chat"
@@ -197,7 +199,9 @@ def build_instructions(npc_id: str) -> str:
         "You are an SLQuest NPC chatting in Second Life. "
         f"NPC ID: {npc_id}. "
         "Reply must be short for Second Life: aim <= 900 characters. "
-        "No markdown. One message only."
+        "No markdown. One message only. "
+        "Use web search only if the user asks for up-to-date facts or checking something online; "
+        "otherwise answer from conversation context."
     )
 
 
@@ -210,6 +214,82 @@ def build_messages(history: list[dict[str, Any]], message: str) -> list[dict[str
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": message})
     return messages
+
+
+def parse_allowed_domains(raw_domains: str) -> list[str]:
+    if not raw_domains:
+        return []
+    domains = [domain.strip() for domain in raw_domains.split(",")]
+    return [domain for domain in domains if domain]
+
+
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def log_web_search_state(
+    request_id: str, client_req_id: str, enabled: bool, allowed_domains: list[str]
+) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    domains = ",".join(allowed_domains) if allowed_domains else "-"
+    line = (
+        f"[{timestamp}] request_id={request_id} client_req_id={client_req_id or '-'} "
+        f"web_search_enabled={int(enabled)} allowed_domains={domains}"
+    )
+    log_line(RUN_LOG_PATH, line)
+
+
+def extract_web_search_sources(response: Any) -> list[str]:
+    sources: list[str] = []
+    output = getattr(response, "output", None)
+    if not isinstance(output, list):
+        return sources
+    for item in output:
+        item_type = getattr(item, "type", None)
+        if item_type != "web_search_call":
+            continue
+        action = getattr(item, "action", None)
+        action_sources = getattr(action, "sources", None) if action else None
+        if not isinstance(action_sources, list):
+            continue
+        for source in action_sources:
+            url = None
+            if isinstance(source, dict):
+                url = source.get("url") or source.get("source") or source.get("title")
+            else:
+                url = getattr(source, "url", None) or getattr(source, "source", None)
+            if isinstance(url, str) and url:
+                sources.append(url)
+            elif isinstance(source, str) and source:
+                sources.append(source)
+    seen: set[str] = set()
+    unique_sources = []
+    for source in sources:
+        if source not in seen:
+            seen.add(source)
+            unique_sources.append(source)
+    return unique_sources
+
+
+def log_web_search_sources(
+    request_id: str, client_req_id: str, sources: list[str], limit: int = 5
+) -> None:
+    if not sources:
+        return
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    trimmed = sources[:limit]
+    source_list = ", ".join(trimmed)
+    line = (
+        f"[{timestamp}] request_id={request_id} client_req_id={client_req_id or '-'} "
+        f"web_search_sources={source_list}"
+    )
+    log_line(RUN_LOG_PATH, line)
 
 
 @app.get("/health")
@@ -241,6 +321,11 @@ def chat() -> tuple:
     object_key = (data.get("object_key") or "").strip()
     region = (data.get("region") or "").strip()
     timestamp = (data.get("ts") or datetime.now(timezone.utc).isoformat())
+    allow_web_search = parse_bool(data.get("allow_web_search"))
+
+    allowed_domains = parse_allowed_domains(WEB_SEARCH_ALLOWED_DOMAINS)
+    effective_web = WEB_SEARCH_ENABLED and allow_web_search
+    log_web_search_state(request_id, client_req_id, effective_web, allowed_domains)
 
     if not message:
         reply = "Sorry, I glitched. Try again."
@@ -293,11 +378,27 @@ def chat() -> tuple:
 
         try:
             if hasattr(CLIENT, "responses"):
-                response = CLIENT.responses.create(
-                    model=OPENAI_MODEL,
-                    instructions=instructions,
-                    input=messages,
-                )
+                request_payload: dict[str, Any] = {
+                    "model": OPENAI_MODEL,
+                    "instructions": instructions,
+                    "input": messages,
+                    "tool_choice": "auto",
+                }
+                if effective_web:
+                    if allowed_domains:
+                        request_payload["tools"] = [
+                            {
+                                "type": "web_search",
+                                "filters": {"allowed_domains": allowed_domains},
+                            }
+                        ]
+                    else:
+                        request_payload["tools"] = [{"type": "web_search"}]
+                    request_payload["include"] = ["web_search_call.action.sources"]
+                response = CLIENT.responses.create(**request_payload)
+                if effective_web:
+                    sources = extract_web_search_sources(response)
+                    log_web_search_sources(request_id, client_req_id, sources)
                 reply_text = (response.output_text or "").strip()
             else:
                 log_error(
