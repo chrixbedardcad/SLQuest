@@ -1,0 +1,9 @@
+{
+  "npcs": {
+    "SLQuest_DefaultNPC": {
+      "display_name": "SLQuest Default NPC",
+      "path": "SLQuest_DefaultNPC",
+      "last_updated_utc": "2026-01-12T22:00:15+00:00"
+    }
+  }
+}
