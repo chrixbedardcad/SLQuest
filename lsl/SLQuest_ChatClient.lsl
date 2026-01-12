@@ -3,6 +3,12 @@ string NPC_ID = "SLQuest_DefaultNPC";
 integer SESSION_TIMEOUT_SEC = 90;
 integer IDLE_HINT_COOLDOWN_SEC = 45;
 integer DEBUG = TRUE;
+integer GREET_ENABLED = TRUE;
+float GREET_RANGE = 12.0;
+float GREET_INTERVAL = 10.0;
+integer GREET_COOLDOWN_PER_AVATAR_SEC = 300;
+integer GREET_GLOBAL_COOLDOWN_SEC = 20;
+integer GREET_SKIP_OWNER = TRUE;
 
 key gActiveAvatar = NULL_KEY;
 integer gListen = -1;
@@ -10,6 +16,8 @@ integer gInFlight = FALSE;
 string gQueuedMessage = "";
 integer gSessionEndTime = 0;
 integer gNextHintTime = 0;
+integer gNextGlobalGreetAt = 0;
+list gGreetMemory = [];
 
 integer nowUnix()
 {
@@ -29,6 +37,53 @@ integer computeNextHintDelay()
 scheduleNextHint()
 {
     gNextHintTime = nowUnix() + computeNextHintDelay();
+}
+
+integer findGreetIndex(key avatar)
+{
+    return llListFindList(gGreetMemory, [avatar]);
+}
+
+integer canGreet(key avatar, integer now)
+{
+    integer index = findGreetIndex(avatar);
+    if (index == -1)
+    {
+        return TRUE;
+    }
+    integer lastGreeted = llList2Integer(gGreetMemory, index + 1);
+    if ((now - lastGreeted) >= GREET_COOLDOWN_PER_AVATAR_SEC)
+    {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+markGreeted(key avatar, integer now)
+{
+    integer index = findGreetIndex(avatar);
+    if (index == -1)
+    {
+        gGreetMemory += [avatar, now];
+        return;
+    }
+    gGreetMemory = llListReplaceList(gGreetMemory, [avatar, now], index, index + 1);
+}
+
+pruneOldGreets(integer now)
+{
+    integer count = llGetListLength(gGreetMemory);
+    integer index;
+    list pruned = [];
+    for (index = 0; index < count; index += 2)
+    {
+        integer lastGreeted = llList2Integer(gGreetMemory, index + 1);
+        if ((now - lastGreeted) < GREET_COOLDOWN_PER_AVATAR_SEC)
+        {
+            pruned += [llList2Key(gGreetMemory, index), lastGreeted];
+        }
+    }
+    gGreetMemory = pruned;
 }
 
 resetSession()
@@ -91,6 +146,10 @@ default
     {
         resetSession();
         llSetTimerEvent(5.0);
+        if (GREET_ENABLED)
+        {
+            llSensorRepeat("", NULL_KEY, AGENT, GREET_RANGE, PI, GREET_INTERVAL);
+        }
     }
 
     touch_start(integer total_number)
@@ -190,6 +249,36 @@ default
         {
             llSay(0, "Touch me if you want to talk.");
             scheduleNextHint();
+        }
+    }
+
+    sensor(integer total_number)
+    {
+        if (gActiveAvatar != NULL_KEY)
+        {
+            return;
+        }
+        integer now = nowUnix();
+        if (now < gNextGlobalGreetAt)
+        {
+            return;
+        }
+        pruneOldGreets(now);
+        integer index;
+        for (index = 0; index < total_number; ++index)
+        {
+            key avatar = llDetectedKey(index);
+            if (GREET_SKIP_OWNER && avatar == llGetOwner())
+            {
+                continue;
+            }
+            if (canGreet(avatar, now))
+            {
+                llSay(0, "Hi " + llDetectedName(index) + ", touch me if you want to talk!");
+                markGreeted(avatar, now);
+                gNextGlobalGreetAt = now + GREET_GLOBAL_COOLDOWN_SEC;
+                return;
+            }
         }
     }
 
