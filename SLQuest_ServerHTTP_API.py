@@ -32,6 +32,7 @@ CHAT_ROOT = BASE_DIR / "chat"
 NPCS_ROOT = BASE_DIR / "npcs"
 NPC_BASE_DIR = NPCS_ROOT / "_base"
 NPC_BASE_SYSTEM_PATH = NPC_BASE_DIR / "system.md"
+OPENAI_TRACE_DIR = LOGS_ROOT / "openai_requests"
 SLQUEST_ADMIN_TOKEN = (os.getenv("SLQUEST_ADMIN_TOKEN") or "").strip()
 RUN_LOG_PATH = LOGS_ROOT / f"SLQuest_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
 ERROR_LOG_PATH = LOGS_ROOT / "SLQuest_errors.log"
@@ -128,6 +129,36 @@ def log_error(message: str) -> None:
 
 def redact_secrets(text: str) -> str:
     return re.sub(r"sk-[A-Za-z0-9]+", "sk-***", text)
+
+
+def redact_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, list):
+        return [redact_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_payload(item) for key, item in value.items()}
+    return value
+
+
+def log_openai_request(
+    request_id: str,
+    client_req_id: str,
+    avatar_key: str,
+    npc_id: str,
+    payload: dict[str, Any],
+) -> None:
+    ensure_dir(OPENAI_TRACE_DIR)
+    trace_path = OPENAI_TRACE_DIR / f"{request_id}_{int(time.time() * 1000)}.json"
+    trace_payload = {
+        "request_id": request_id,
+        "client_req_id": client_req_id,
+        "avatar_key": avatar_key,
+        "npc_id": npc_id,
+        "logged_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "payload": redact_payload(payload),
+    }
+    atomic_write_json(trace_path, trace_payload)
 
 
 def safe_error_reason(exc: Exception) -> str:
@@ -653,6 +684,9 @@ def chat() -> tuple:
                     else:
                         request_payload["tools"] = [{"type": "web_search"}]
                     request_payload["include"] = ["web_search_call.action.sources"]
+                log_openai_request(
+                    request_id, client_req_id, avatar_key, npc_id, request_payload
+                )
                 response = CLIENT.responses.create(**request_payload)
                 if effective_web:
                     sources = extract_web_search_sources(response)
@@ -665,6 +699,17 @@ def chat() -> tuple:
             )
             history = load_history(avatar_key, npc_id, last_n=max_history)
             messages = build_messages(history, message)
+            log_openai_request(
+                request_id,
+                client_req_id,
+                avatar_key,
+                npc_id,
+                {
+                    "model": model,
+                    "messages": [{"role": "system", "content": instructions}]
+                    + messages,
+                },
+            )
             resp = CLIENT.chat.completions.create(
                 model=model,
                 messages=[{"role": "system", "content": instructions}] + messages,
