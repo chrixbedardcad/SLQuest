@@ -2,25 +2,32 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from openai import OpenAI
 
 
-load_dotenv("SLQuest.env")
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / "SLQuest.env")
 
 app = Flask(__name__)
 
 PORT = int(os.getenv("PORT", "8001"))
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-5.2").strip() or "gpt-5.2"
 
-LOGS_ROOT = Path(__file__).resolve().parent / "logs"
-CHAT_ROOT = Path(__file__).resolve().parent / "chat"
+LOGS_ROOT = BASE_DIR / "logs"
+CHAT_ROOT = BASE_DIR / "chat"
 RUN_LOG_PATH = LOGS_ROOT / f"SLQuest_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
+ERROR_LOG_PATH = LOGS_ROOT / "SLQuest_errors.log"
 
 CLIENT = OpenAI()
 
@@ -29,16 +36,63 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def log_request_line(endpoint: str, avatar_key: str, message: str, status: str) -> None:
+def log_line(path: Path, line: str) -> None:
     ensure_dir(LOGS_ROOT)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
+def log_request_line(
+    endpoint: str,
+    request_id: str,
+    avatar_key: str,
+    npc_id: str,
+    message: str,
+    status: str,
+    elapsed_ms: int,
+) -> None:
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     snippet = message.replace("\n", " ").replace("\r", " ")[:120]
     line = (
-        f"[{timestamp}] endpoint={endpoint} avatar_key={avatar_key or '-'} "
-        f"status={status} msg=\"{snippet}\""
+        f"[{timestamp}] endpoint={endpoint} request_id={request_id} "
+        f"avatar_key={avatar_key or '-'} npc_id={npc_id or '-'} "
+        f"status={status} elapsed_ms={elapsed_ms} msg=\"{snippet}\""
     )
-    with RUN_LOG_PATH.open("a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
+    log_line(RUN_LOG_PATH, line)
+
+
+def log_error(message: str) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    line = f"[{timestamp}] {message}"
+    log_line(RUN_LOG_PATH, line)
+    log_line(ERROR_LOG_PATH, line)
+
+
+def redact_secrets(text: str) -> str:
+    return re.sub(r"sk-[A-Za-z0-9]+", "sk-***", text)
+
+
+def safe_error_reason(exc: Exception) -> str:
+    reason = f"{type(exc).__name__}: {exc}"
+    reason = redact_secrets(reason)
+    return reason[:160]
+
+
+def log_openai_exception(request_id: str, exc: Exception) -> None:
+    trace = traceback.format_exc(limit=3)
+    message = redact_secrets(str(exc))
+    log_error(
+        "OpenAI exception "
+        f"request_id={request_id} type={type(exc).__name__} "
+        f"message=\"{message}\" trace=\"{trace.strip()}\""
+    )
+
+
+if not OPENAI_API_KEY:
+    ensure_dir(LOGS_ROOT)
+    startup_message = "ERROR: OPENAI_API_KEY missing. Update SLQuest.env and restart."
+    log_line(RUN_LOG_PATH, startup_message)
+    print(startup_message)
 
 
 def history_path(avatar_key: str) -> Path:
@@ -123,16 +177,24 @@ def build_messages(history: list[dict[str, Any]], message: str) -> list[dict[str
 
 @app.get("/health")
 def health() -> tuple[str, int]:
-    log_request_line("/health", "", "", "200")
-    return "ok", 200
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
+    status = 200
+    response = ("ok", status)
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line("/health", request_id, "", "", "", str(status), elapsed_ms)
+    return response
 
 
 @app.post("/chat")
 def chat() -> tuple:
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         reply = "Sorry, I glitched. Try again."
-        log_request_line("/chat", "", "", "400")
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line("/chat", request_id, "", "", "", "400", elapsed_ms)
         return jsonify({"ok": False, "reply": reply, "error": "invalid_json"}), 400
 
     message = (data.get("message") or "").strip()
@@ -144,8 +206,25 @@ def chat() -> tuple:
 
     if not message:
         reply = "Sorry, I glitched. Try again."
-        log_request_line("/chat", avatar_key, message, "400")
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line("/chat", request_id, avatar_key, npc_id, message, "400", elapsed_ms)
         return jsonify({"ok": False, "reply": reply, "error": "message_required"}), 400
+
+    if not OPENAI_API_KEY:
+        reply = "Server misconfigured (missing OPENAI_API_KEY)."
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line("/chat", request_id, avatar_key, npc_id, message, "500", elapsed_ms)
+        log_error(f"request_id={request_id} configuration error: OPENAI_API_KEY missing")
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reply": reply,
+                    "error": "OPENAI_API_KEY missing",
+                }
+            ),
+            500,
+        )
 
     history = load_history(avatar_key, last_n=8)
     messages = build_messages(history, message)
@@ -164,7 +243,8 @@ def chat() -> tuple:
         if not reply_text:
             error_message = "empty_reply"
     except Exception as exc:
-        error_message = str(exc)[:120]
+        error_message = safe_error_reason(exc)
+        log_openai_exception(request_id, exc)
 
     if error_message:
         reply_text = "Sorry, I glitched. Try again."
@@ -193,7 +273,8 @@ def chat() -> tuple:
     append_history(avatar_key, [user_event, assistant_event])
 
     status_code = 200 if ok else 502
-    log_request_line("/chat", avatar_key, message, str(status_code))
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line("/chat", request_id, avatar_key, npc_id, message, str(status_code), elapsed_ms)
 
     response_payload: dict[str, Any] = {
         "ok": ok,
