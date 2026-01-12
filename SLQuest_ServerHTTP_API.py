@@ -351,9 +351,15 @@ def build_instructions(npc_id: str) -> str:
     )
     base_text = read_text_if_exists(NPC_BASE_SYSTEM_PATH).strip()
     npc_text = read_text_if_exists(npc_system_path(npc_id)).strip()
-    if not base_text or not npc_text:
+    if not base_text and not npc_text:
         return fallback
-    return "\n\n".join([base_text, f"NPC ID: {npc_id}.", npc_text])
+    parts: list[str] = []
+    if base_text:
+        parts.append(base_text)
+    parts.append(f"NPC ID: {npc_id}.")
+    if npc_text:
+        parts.append(npc_text)
+    return "\n\n".join(parts)
 
 
 def build_messages(history: list[dict[str, Any]], message: str) -> list[dict[str, str]]:
