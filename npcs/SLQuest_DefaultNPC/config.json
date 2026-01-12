@@ -1,0 +1,5 @@
+{
+  "display_name": "SLQuest Default NPC",
+  "model": "gpt-5.2",
+  "max_history_events": 8
+}

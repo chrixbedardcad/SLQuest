@@ -29,6 +29,10 @@ WEB_SEARCH_ALLOWED_DOMAINS = (os.getenv("WEB_SEARCH_ALLOWED_DOMAINS") or "").str
 
 LOGS_ROOT = BASE_DIR / "logs"
 CHAT_ROOT = BASE_DIR / "chat"
+NPCS_ROOT = BASE_DIR / "npcs"
+NPC_BASE_DIR = NPCS_ROOT / "_base"
+NPC_BASE_SYSTEM_PATH = NPC_BASE_DIR / "system.md"
+SLQUEST_ADMIN_TOKEN = (os.getenv("SLQUEST_ADMIN_TOKEN") or "").strip()
 RUN_LOG_PATH = LOGS_ROOT / f"SLQuest_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
 ERROR_LOG_PATH = LOGS_ROOT / "SLQuest_errors.log"
 
@@ -43,6 +47,55 @@ def log_line(path: Path, line: str) -> None:
     ensure_dir(LOGS_ROOT)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
+
+
+def read_text_if_exists(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    ensure_dir(path.parent)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(text, encoding="utf-8")
+    temp_path.replace(path)
+
+
+def atomic_write_json(path: Path, obj: Any) -> None:
+    atomic_write_text(path, json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+def valid_npc_id(npc_id: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]{1,32}", npc_id))
+
+
+def npc_profile_dir(npc_id: str) -> Path:
+    return NPCS_ROOT / npc_id
+
+
+def npc_system_path(npc_id: str) -> Path:
+    return npc_profile_dir(npc_id) / "system.md"
+
+
+def npc_config_path(npc_id: str) -> Path:
+    return npc_profile_dir(npc_id) / "config.json"
+
+
+def load_npc_config(npc_id: str) -> dict[str, Any]:
+    defaults = {"model": OPENAI_MODEL, "max_history_events": 8, "display_name": npc_id}
+    path = npc_config_path(npc_id)
+    if not path.exists():
+        return defaults
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return defaults
+    if not isinstance(loaded, dict):
+        return defaults
+    merged = defaults.copy()
+    merged.update(loaded)
+    return merged
 
 
 def log_request_line(
@@ -113,6 +166,7 @@ def is_conversation_invalid(exc: Exception) -> bool:
 
 
 log_line(RUN_LOG_PATH, f"OpenAI SDK version: {openai_pkg.__version__}")
+ensure_dir(NPCS_ROOT)
 
 if not OPENAI_API_KEY:
     ensure_dir(LOGS_ROOT)
@@ -151,6 +205,8 @@ def thread_metadata_path(avatar_key: str, npc_id: str) -> Path:
 
 
 def load_history(avatar_key: str, npc_id: str, last_n: int) -> list[dict[str, Any]]:
+    if last_n <= 0:
+        return []
     path = history_jsonl_path(avatar_key, npc_id)
     if not path.exists():
         return []
@@ -254,7 +310,7 @@ def json_response(payload: dict[str, Any], status_code: int) -> tuple[Response, 
 
 
 def build_instructions(npc_id: str) -> str:
-    return (
+    fallback = (
         "You are an SLQuest NPC chatting in Second Life. "
         f"NPC ID: {npc_id}. "
         "Reply must be short for Second Life: aim <= 900 characters. "
@@ -262,6 +318,11 @@ def build_instructions(npc_id: str) -> str:
         "Use web search only if the user asks for up-to-date facts or checking something online; "
         "otherwise answer from conversation context."
     )
+    base_text = read_text_if_exists(NPC_BASE_SYSTEM_PATH).strip()
+    npc_text = read_text_if_exists(npc_system_path(npc_id)).strip()
+    if not base_text or not npc_text:
+        return fallback
+    return "\n\n".join([base_text, f"NPC ID: {npc_id}.", npc_text])
 
 
 def build_messages(history: list[dict[str, Any]], message: str) -> list[dict[str, str]]:
@@ -357,6 +418,98 @@ def log_web_search_sources(
     log_line(RUN_LOG_PATH, line)
 
 
+@app.post("/admin/npc/upsert")
+def admin_npc_upsert() -> tuple[Response, int]:
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/admin/npc/upsert", request_id, "", "", "", "", "400", elapsed_ms
+        )
+        return json_response(
+            {"ok": False, "error": "invalid_json", "request_id": request_id}, 400
+        )
+
+    admin_token = (data.get("admin_token") or "").strip()
+    npc_id = (data.get("npc_id") or "").strip()
+    system_prompt = data.get("system_prompt") or ""
+
+    if admin_token != SLQUEST_ADMIN_TOKEN:
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/admin/npc/upsert", request_id, "", "", npc_id, "", "403", elapsed_ms
+        )
+        return json_response(
+            {"ok": False, "error": "forbidden", "request_id": request_id}, 403
+        )
+
+    if not valid_npc_id(npc_id):
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/admin/npc/upsert", request_id, "", "", npc_id, "", "400", elapsed_ms
+        )
+        return json_response(
+            {"ok": False, "error": "invalid_npc_id", "request_id": request_id}, 400
+        )
+
+    if not isinstance(system_prompt, str):
+        system_prompt = str(system_prompt)
+
+    display_name = (data.get("display_name") or "").strip()
+    model = (data.get("model") or "").strip()
+    max_history_raw = data.get("max_history_events")
+
+    profile_dir = npc_profile_dir(npc_id)
+    ensure_dir(profile_dir)
+    atomic_write_text(npc_system_path(npc_id), system_prompt)
+
+    existing_config = load_npc_config(npc_id)
+    new_config = dict(existing_config)
+    if display_name:
+        new_config["display_name"] = display_name
+    if model:
+        new_config["model"] = model
+    if max_history_raw is not None:
+        try:
+            new_config["max_history_events"] = int(max_history_raw)
+        except (TypeError, ValueError):
+            pass
+    atomic_write_json(npc_config_path(npc_id), new_config)
+
+    index_path = NPCS_ROOT / "index.json"
+    registry: dict[str, Any] = {"npcs": {}}
+    if index_path.exists():
+        try:
+            loaded = json.loads(index_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                registry = loaded
+        except json.JSONDecodeError:
+            registry = {"npcs": {}}
+    if not isinstance(registry.get("npcs"), dict):
+        registry["npcs"] = {}
+    registry["npcs"][npc_id] = {
+        "display_name": new_config.get("display_name", npc_id),
+        "path": npc_id,
+        "last_updated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    atomic_write_json(index_path, registry)
+
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line(
+        "/admin/npc/upsert",
+        request_id,
+        "",
+        "",
+        npc_id,
+        system_prompt,
+        "200",
+        elapsed_ms,
+    )
+    return json_response({"ok": True, "npc_id": npc_id, "updated": True}, 200)
+
+
 @app.get("/health")
 def health() -> tuple[str, int]:
     start_time = time.perf_counter()
@@ -433,6 +586,13 @@ def chat() -> tuple:
         )
 
     try:
+        config = load_npc_config(npc_id)
+        model = config.get("model", OPENAI_MODEL)
+        try:
+            max_history = int(config.get("max_history_events", 8))
+        except (TypeError, ValueError):
+            max_history = 8
+        max_history = max(0, min(50, max_history))
         instructions = build_instructions(npc_id)
         thread_key_value = thread_key(avatar_key, npc_id)
         update_thread_metadata(
@@ -471,7 +631,7 @@ def chat() -> tuple:
         def request_openai(use_thread: bool) -> str:
             if hasattr(CLIENT, "responses"):
                 request_payload: dict[str, Any] = {
-                    "model": OPENAI_MODEL,
+                    "model": model,
                     "instructions": instructions,
                     "tool_choice": "auto",
                 }
@@ -480,7 +640,7 @@ def chat() -> tuple:
                     request_payload["conversation"] = conversation_id
                     request_payload["truncation"] = "auto"
                 else:
-                    history = load_history(avatar_key, npc_id, last_n=8)
+                    history = load_history(avatar_key, npc_id, last_n=max_history)
                     request_payload["input"] = build_messages(history, message)
                 if effective_web:
                     if allowed_domains:
@@ -503,10 +663,10 @@ def chat() -> tuple:
                 "Upgrade via `python -m pip install -U openai`. "
                 f"request_id={request_id}"
             )
-            history = load_history(avatar_key, npc_id, last_n=8)
+            history = load_history(avatar_key, npc_id, last_n=max_history)
             messages = build_messages(history, message)
             resp = CLIENT.chat.completions.create(
-                model=OPENAI_MODEL,
+                model=model,
                 messages=[{"role": "system", "content": instructions}] + messages,
             )
             return (resp.choices[0].message.content or "").strip()
