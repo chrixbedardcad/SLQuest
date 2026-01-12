@@ -223,6 +223,16 @@ def parse_allowed_domains(raw_domains: str) -> list[str]:
     return [domain for domain in domains if domain]
 
 
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
 def log_web_search_state(
     request_id: str, client_req_id: str, enabled: bool, allowed_domains: list[str]
 ) -> None:
@@ -311,7 +321,7 @@ def chat() -> tuple:
     object_key = (data.get("object_key") or "").strip()
     region = (data.get("region") or "").strip()
     timestamp = (data.get("ts") or datetime.now(timezone.utc).isoformat())
-    allow_web_search = bool(data.get("allow_web_search") is True)
+    allow_web_search = parse_bool(data.get("allow_web_search"))
 
     allowed_domains = parse_allowed_domains(WEB_SEARCH_ALLOWED_DOMAINS)
     effective_web = WEB_SEARCH_ENABLED and allow_web_search
