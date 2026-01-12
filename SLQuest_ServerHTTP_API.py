@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, Response, request
 import openai as openai_pkg
 from openai import OpenAI
 
@@ -170,6 +170,28 @@ def clamp_reply(text: str, max_bytes: int = 1024) -> str:
     return fallback + ellipsis
 
 
+def sanitize_punctuation(text: str) -> str:
+    replacements = {
+        "\u2019": "'",
+        "\u2018": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+    }
+    return text.translate(str.maketrans(replacements))
+
+
+def json_response(payload: dict[str, Any], status_code: int) -> tuple[Response, int]:
+    return (
+        Response(
+            json.dumps(payload, ensure_ascii=False),
+            mimetype="application/json; charset=utf-8",
+        ),
+        status_code,
+    )
+
+
 def build_instructions(npc_id: str) -> str:
     return (
         "You are an SLQuest NPC chatting in Second Life. "
@@ -210,7 +232,7 @@ def chat() -> tuple:
         reply = "Sorry, I glitched. Try again."
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
         log_request_line("/chat", request_id, "", "", "", "", "400", elapsed_ms)
-        return jsonify({"ok": False, "reply": reply, "error": "invalid_json"}), 400
+        return json_response({"ok": False, "reply": reply, "error": "invalid_json"}, 400)
 
     client_req_id = (data.get("client_req_id") or "").strip()
     message = (data.get("message") or "").strip()
@@ -233,7 +255,9 @@ def chat() -> tuple:
             "400",
             elapsed_ms,
         )
-        return jsonify({"ok": False, "reply": reply, "error": "message_required"}), 400
+        return json_response(
+            {"ok": False, "reply": reply, "error": "message_required"}, 400
+        )
 
     if not OPENAI_API_KEY:
         reply = "Server misconfigured (missing OPENAI_API_KEY)."
@@ -249,14 +273,12 @@ def chat() -> tuple:
             elapsed_ms,
         )
         log_error(f"request_id={request_id} configuration error: OPENAI_API_KEY missing")
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "reply": reply,
-                    "error": "OPENAI_API_KEY missing",
-                }
-            ),
+        return json_response(
+            {
+                "ok": False,
+                "reply": reply,
+                "error": "OPENAI_API_KEY missing",
+            },
             500,
         )
 
@@ -301,7 +323,7 @@ def chat() -> tuple:
         else:
             ok = True
 
-        reply_text = clamp_reply(reply_text)
+        reply_text = clamp_reply(sanitize_punctuation(reply_text))
 
         user_event = {
             "ts": timestamp,
@@ -344,7 +366,7 @@ def chat() -> tuple:
             if had_exception:
                 response_payload["request_id"] = request_id
 
-        return jsonify(response_payload), status_code
+        return json_response(response_payload, status_code)
     except Exception as exc:
         log_unhandled_exception(request_id, exc)
         reply = "Sorry, I glitched. Try again."
@@ -360,15 +382,13 @@ def chat() -> tuple:
             "502",
             elapsed_ms,
         )
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "reply": reply,
-                    "error": error_message,
-                    "request_id": request_id,
-                }
-            ),
+        return json_response(
+            {
+                "ok": False,
+                "reply": reply,
+                "error": error_message,
+                "request_id": request_id,
+            },
             502,
         )
 
