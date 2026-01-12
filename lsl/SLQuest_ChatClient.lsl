@@ -6,6 +6,7 @@ integer DEBUG = TRUE;
 integer GREET_ENABLED = TRUE;
 float GREET_RANGE = 12.0;
 float GREET_INTERVAL = 10.0;
+integer ALLOW_WEB_SEARCH = TRUE;
 integer GREET_COOLDOWN_PER_AVATAR_SEC = 300;
 integer GREET_GLOBAL_COOLDOWN_SEC = 20;
 integer GREET_SKIP_OWNER = TRUE;
@@ -109,6 +110,7 @@ string buildPayload(string message)
         "object_key", (string)llGetKey(),
         "object_name", llGetObjectName(),
         "region", llGetRegionName(),
+        "allow_web_search", ALLOW_WEB_SEARCH,
         "message", message,
         "ts", llGetTimestamp()
     ]);
