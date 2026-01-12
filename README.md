@@ -51,6 +51,18 @@ curl -X POST http://localhost:8001/chat \
   }'
 ```
 
+## Debugging OpenAI
+
+- Ensure `SLQuest.env` lives beside `SLQuest_ServerHTTP_API.py` (same folder).
+- Check logs in `logs/`, including the per-run `logs/SLQuest_<TS>.log` and the append-only `logs/SLQuest_errors.log`.
+- Minimal `/chat` check:
+
+```bash
+curl -X POST http://localhost:8001/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Hello","avatar_key":"debug-avatar","npc_id":"SLQuest_DefaultNPC"}'
+```
+
 ## Notes
 
 - `logs/` and `chat/` are runtime directories and are ignored by git.
