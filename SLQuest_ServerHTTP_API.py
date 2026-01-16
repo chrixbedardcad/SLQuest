@@ -227,8 +227,8 @@ def conversation_id_path(avatar_key: str, npc_id: str) -> Path:
     return thread_dir(avatar_key, npc_id) / "conversation_id.txt"
 
 
-def history_jsonl_path(avatar_key: str, npc_id: str) -> Path:
-    return thread_dir(avatar_key, npc_id) / "history.jsonl"
+def history_json_path(avatar_key: str, npc_id: str) -> Path:
+    return thread_dir(avatar_key, npc_id) / "history.json"
 
 
 def thread_metadata_path(avatar_key: str, npc_id: str) -> Path:
@@ -238,25 +238,32 @@ def thread_metadata_path(avatar_key: str, npc_id: str) -> Path:
 def load_history(avatar_key: str, npc_id: str, last_n: int) -> list[dict[str, Any]]:
     if last_n <= 0:
         return []
-    path = history_jsonl_path(avatar_key, npc_id)
+    path = history_json_path(avatar_key, npc_id)
     if not path.exists():
         return []
-    events: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(entry, dict):
-            events.append(entry)
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if isinstance(loaded, list):
+        events = [entry for entry in loaded if isinstance(entry, dict)]
+    else:
+        events = []
     return events[-last_n:]
 
 
 def append_history(avatar_key: str, npc_id: str, event: dict[str, Any]) -> None:
-    path = history_jsonl_path(avatar_key, npc_id)
-    line = json.dumps(event, ensure_ascii=False)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
+    path = history_json_path(avatar_key, npc_id)
+    events: list[dict[str, Any]] = []
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                events = [entry for entry in loaded if isinstance(entry, dict)]
+        except json.JSONDecodeError:
+            events = []
+    events.append(event)
+    atomic_write_json(path, events)
 
 
 def load_conversation_id(avatar_key: str, npc_id: str) -> str | None:
@@ -564,7 +571,7 @@ def chat() -> tuple:
     request_id = uuid4().hex[:8]
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
-        reply = "Sorry, I glitched. Try again."
+        reply = f"Error: invalid_json payload (request_id={request_id})."
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
         log_request_line("/chat", request_id, "", "", "", "", "400", elapsed_ms)
         return json_response({"ok": False, "reply": reply, "error": "invalid_json"}, 400)
@@ -583,7 +590,7 @@ def chat() -> tuple:
     log_web_search_state(request_id, client_req_id, effective_web, allowed_domains)
 
     if not message:
-        reply = "Sorry, I glitched. Try again."
+        reply = f"Error: message_required (request_id={request_id})."
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
         log_request_line(
             "/chat",
@@ -743,7 +750,7 @@ def chat() -> tuple:
             log_openai_exception(request_id, exc)
 
         if error_message:
-            reply_text = "Sorry, I glitched. Try again."
+            reply_text = f"Error: upstream_reply_failed ({error_message or 'unknown'})."
             ok = False
         else:
             ok = True
@@ -804,8 +811,8 @@ def chat() -> tuple:
         return json_response(response_payload, status_code)
     except Exception as exc:
         log_unhandled_exception(request_id, exc)
-        reply = "Sorry, I glitched. Try again."
         error_message = safe_error_reason(exc)
+        reply = f"Error: server_exception ({error_message})."
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
         log_request_line(
             "/chat",
