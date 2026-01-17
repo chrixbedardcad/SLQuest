@@ -192,7 +192,7 @@ default
     http_response(key request_id, integer status, list metadata, string body)
     {
         gInFlight = FALSE;
-        integer replyType = llJsonValueType(body, ["reply"]);
+        string replyType = llJsonValueType(body, ["reply"]);
         string reply = "";
         if (replyType == JSON_STRING)
         {
