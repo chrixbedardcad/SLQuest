@@ -213,13 +213,13 @@ default
 
         if (status != 200)
         {
-            llRegionSayTo(gActiveAvatar, 0, "Sorry, I glitched. Try again.");
+            llRegionSayTo(gActiveAvatar, 0, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
         }
         else
         {
             if (reply == JSON_INVALID)
             {
-                llRegionSayTo(gActiveAvatar, 0, "Sorry, I glitched. Try again.");
+                llRegionSayTo(gActiveAvatar, 0, "ERROR JSON_INVALID: Sorry, I glitched. Try again.");
             }
             else
             {
