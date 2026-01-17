@@ -161,6 +161,58 @@ def log_openai_request(
     atomic_write_json(trace_path, trace_payload)
 
 
+def trim_log_text(text: str, max_len: int = 800) -> str:
+    cleaned = text.replace("\n", " ").replace("\r", " ")
+    if len(cleaned) <= max_len:
+        return cleaned
+    return cleaned[:max_len] + "…"
+
+
+def log_incoming_request(
+    endpoint: str,
+    request_id: str,
+    client_req_id: str,
+    avatar_key: str,
+    npc_id: str,
+    payload: Any,
+    raw_body: str,
+    note: str = "",
+) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    safe_payload = redact_payload(payload)
+    payload_text = trim_log_text(json.dumps(safe_payload, ensure_ascii=False))
+    raw_text = trim_log_text(raw_body)
+    line = (
+        f"[{timestamp}] endpoint={endpoint} request_id={request_id} "
+        f"client_req_id={client_req_id or '-'} avatar_key={avatar_key or '-'} "
+        f"npc_id={npc_id or '-'} note={note or '-'} "
+        f"content_type={request.content_type or '-'} "
+        f"content_length={request.content_length or '-'} "
+        f"payload={payload_text} raw_body=\"{raw_text}\""
+    )
+    log_line(RUN_LOG_PATH, line)
+
+
+def log_response_payload(
+    endpoint: str,
+    request_id: str,
+    client_req_id: str,
+    avatar_key: str,
+    npc_id: str,
+    status_code: int,
+    payload: dict[str, Any],
+) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    safe_payload = redact_payload(payload)
+    payload_text = trim_log_text(json.dumps(safe_payload, ensure_ascii=False))
+    line = (
+        f"[{timestamp}] endpoint={endpoint} request_id={request_id} "
+        f"client_req_id={client_req_id or '-'} avatar_key={avatar_key or '-'} "
+        f"npc_id={npc_id or '-'} status={status_code} response={payload_text}"
+    )
+    log_line(RUN_LOG_PATH, line)
+
+
 def safe_error_reason(exc: Exception) -> str:
     reason = f"{type(exc).__name__}: {exc}"
     reason = redact_secrets(reason)
@@ -466,9 +518,20 @@ def log_web_search_sources(
 def admin_npc_upsert() -> tuple[Response, int]:
     start_time = time.perf_counter()
     request_id = uuid4().hex[:8]
+    raw_body = request.get_data(cache=True, as_text=True) or ""
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_incoming_request(
+            "/admin/npc/upsert",
+            request_id,
+            "",
+            "",
+            "",
+            data,
+            raw_body,
+            note="invalid_json",
+        )
         log_request_line(
             "/admin/npc/upsert", request_id, "", "", "", "", "400", elapsed_ms
         )
@@ -479,6 +542,17 @@ def admin_npc_upsert() -> tuple[Response, int]:
     admin_token = (data.get("admin_token") or "").strip()
     npc_id = (data.get("npc_id") or "").strip()
     system_prompt = data.get("system_prompt") or ""
+
+    log_incoming_request(
+        "/admin/npc/upsert",
+        request_id,
+        "",
+        "",
+        npc_id,
+        data,
+        raw_body,
+        note="received",
+    )
 
     if admin_token != SLQUEST_ADMIN_TOKEN:
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
@@ -551,7 +625,11 @@ def admin_npc_upsert() -> tuple[Response, int]:
         "200",
         elapsed_ms,
     )
-    return json_response({"ok": True, "npc_id": npc_id, "updated": True}, 200)
+    response_payload = {"ok": True, "npc_id": npc_id, "updated": True}
+    log_response_payload(
+        "/admin/npc/upsert", request_id, "", "", npc_id, 200, response_payload
+    )
+    return json_response(response_payload, 200)
 
 
 @app.get("/health")
@@ -569,12 +647,18 @@ def health() -> tuple[str, int]:
 def chat() -> tuple:
     start_time = time.perf_counter()
     request_id = uuid4().hex[:8]
+    raw_body = request.get_data(cache=True, as_text=True) or ""
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         reply = f"Error: invalid_json payload (request_id={request_id})."
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_incoming_request(
+            "/chat", request_id, "", "", "", data, raw_body, note="invalid_json"
+        )
         log_request_line("/chat", request_id, "", "", "", "", "400", elapsed_ms)
-        return json_response({"ok": False, "reply": reply, "error": "invalid_json"}, 400)
+        response_payload = {"ok": False, "reply": reply, "error": "invalid_json"}
+        log_response_payload("/chat", request_id, "", "", "", 400, response_payload)
+        return json_response(response_payload, 400)
 
     client_req_id = (data.get("client_req_id") or "").strip()
     message = (data.get("message") or "").strip()
@@ -584,6 +668,17 @@ def chat() -> tuple:
     region = (data.get("region") or "").strip()
     timestamp = (data.get("ts") or datetime.now(timezone.utc).isoformat())
     allow_web_search = parse_bool(data.get("allow_web_search"))
+
+    log_incoming_request(
+        "/chat",
+        request_id,
+        client_req_id,
+        avatar_key,
+        npc_id,
+        data,
+        raw_body,
+        note="received",
+    )
 
     allowed_domains = parse_allowed_domains(WEB_SEARCH_ALLOWED_DOMAINS)
     effective_web = WEB_SEARCH_ENABLED and allow_web_search
@@ -602,9 +697,17 @@ def chat() -> tuple:
             "400",
             elapsed_ms,
         )
-        return json_response(
-            {"ok": False, "reply": reply, "error": "message_required"}, 400
+        response_payload = {"ok": False, "reply": reply, "error": "message_required"}
+        log_response_payload(
+            "/chat",
+            request_id,
+            client_req_id,
+            avatar_key,
+            npc_id,
+            400,
+            response_payload,
         )
+        return json_response(response_payload, 400)
 
     if not OPENAI_API_KEY:
         reply = "Server misconfigured (missing OPENAI_API_KEY)."
@@ -620,14 +723,21 @@ def chat() -> tuple:
             elapsed_ms,
         )
         log_error(f"request_id={request_id} configuration error: OPENAI_API_KEY missing")
-        return json_response(
-            {
-                "ok": False,
-                "reply": reply,
-                "error": "OPENAI_API_KEY missing",
-            },
+        response_payload = {
+            "ok": False,
+            "reply": reply,
+            "error": "OPENAI_API_KEY missing",
+        }
+        log_response_payload(
+            "/chat",
+            request_id,
+            client_req_id,
+            avatar_key,
+            npc_id,
             500,
+            response_payload,
         )
+        return json_response(response_payload, 500)
 
     try:
         config = load_npc_config(npc_id)
@@ -808,6 +918,15 @@ def chat() -> tuple:
             if had_exception:
                 response_payload["request_id"] = request_id
 
+        log_response_payload(
+            "/chat",
+            request_id,
+            client_req_id,
+            avatar_key,
+            npc_id,
+            status_code,
+            response_payload,
+        )
         return json_response(response_payload, status_code)
     except Exception as exc:
         log_unhandled_exception(request_id, exc)
@@ -824,15 +943,22 @@ def chat() -> tuple:
             "502",
             elapsed_ms,
         )
-        return json_response(
-            {
-                "ok": False,
-                "reply": reply,
-                "error": error_message,
-                "request_id": request_id,
-            },
+        response_payload = {
+            "ok": False,
+            "reply": reply,
+            "error": error_message,
+            "request_id": request_id,
+        }
+        log_response_payload(
+            "/chat",
+            request_id,
+            client_req_id,
+            avatar_key,
+            npc_id,
             502,
+            response_payload,
         )
+        return json_response(response_payload, 502)
 
 
 if __name__ == "__main__":
