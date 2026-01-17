@@ -226,6 +226,8 @@ default
             return;
         }
 
+        gSessionEndTime = nowUnix() + SESSION_TIMEOUT_SEC;
+
         if (gInFlight)
         {
             gQueuedMessage = message;
