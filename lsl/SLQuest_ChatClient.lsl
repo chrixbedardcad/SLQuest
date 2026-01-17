@@ -57,7 +57,7 @@ updateDebugTexture(key avatar)
         return;
     }
     gProfileAvatar = avatar;
-    gProfileRequest = llRequestAgentData(avatar, DATA_PROFILE_IMAGE);
+    gProfileRequest = llRequestAgentData(avatar, DATA_IMAGE);
 }
 
 integer findGreetIndex(key avatar)
