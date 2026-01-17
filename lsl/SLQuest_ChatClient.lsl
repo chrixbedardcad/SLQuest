@@ -13,11 +13,12 @@ integer GREET_COOLDOWN_PER_AVATAR_SEC = 300;
 integer GREET_GLOBAL_COOLDOWN_SEC = 20;
 integer GREET_SKIP_OWNER = TRUE;
 
-key gActiveAvatar = NULL_KEY;
+list gActiveAvatars = [];
+list gSessionEndTimes = [];
+list gQueuedMessages = [];
+list gInFlightAvatars = [];
+list gRequestMap = [];
 integer gListen = -1;
-integer gInFlight = FALSE;
-string gQueuedMessage = "";
-integer gSessionEndTime = 0;
 integer gNextHintTime = 0;
 integer gNextGlobalGreetAt = 0;
 list gGreetMemory = [];
@@ -137,21 +138,62 @@ resetSession()
         llListenRemove(gListen);
         gListen = -1;
     }
-    gActiveAvatar = NULL_KEY;
-    gInFlight = FALSE;
-    gQueuedMessage = "";
-    gSessionEndTime = 0;
+    gActiveAvatars = [];
+    gSessionEndTimes = [];
+    gQueuedMessages = [];
+    gInFlightAvatars = [];
+    gRequestMap = [];
     scheduleNextHint();
     gProfileRequest = NULL_KEY;
     gProfileAvatar = NULL_KEY;
 }
 
-string buildPayload(string message)
+integer findActiveIndex(key avatar)
+{
+    return llListFindList(gActiveAvatars, [avatar]);
+}
+
+integer isActive(key avatar)
+{
+    return findActiveIndex(avatar) != -1;
+}
+
+integer isInFlight(key avatar)
+{
+    return llListFindList(gInFlightAvatars, [avatar]) != -1;
+}
+
+setQueuedMessage(key avatar, string message)
+{
+    integer index = findActiveIndex(avatar);
+    if (index == -1)
+    {
+        return;
+    }
+    gQueuedMessages = llListReplaceList(gQueuedMessages, [message], index, index);
+}
+
+string getQueuedMessage(key avatar)
+{
+    integer index = findActiveIndex(avatar);
+    if (index == -1)
+    {
+        return "";
+    }
+    return llList2String(gQueuedMessages, index);
+}
+
+clearQueuedMessage(key avatar)
+{
+    setQueuedMessage(avatar, "");
+}
+
+string buildPayload(key avatar, string message)
 {
     return llList2Json(JSON_OBJECT, [
         "npc_id", NPC_ID,
-        "avatar_key", (string)gActiveAvatar,
-        "avatar_name", llKey2Name(gActiveAvatar),
+        "avatar_key", (string)avatar,
+        "avatar_name", llKey2Name(avatar),
         "object_key", (string)llGetKey(),
         "object_name", llGetObjectName(),
         "region", llGetRegionName(),
@@ -161,30 +203,59 @@ string buildPayload(string message)
     ]);
 }
 
-sendMessage(string message)
+sendMessage(key avatar, string message)
 {
-    string payload = buildPayload(message);
+    string payload = buildPayload(avatar, message);
     string url = SERVER_BASE + "/chat";
-    gInFlight = TRUE;
-    llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
+    gInFlightAvatars += [avatar];
+    key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
+    gRequestMap += [requestId, avatar];
+}
+
+ensureListen()
+{
+    if (gListen != -1)
+    {
+        return;
+    }
+    gListen = llListen(0, "", NULL_KEY, "");
 }
 
 startSession(key avatar)
 {
-    gActiveAvatar = avatar;
-    gListen = llListen(0, "", gActiveAvatar, "");
-    gSessionEndTime = nowUnix() + SESSION_TIMEOUT_SEC;
-    llRegionSayTo(gActiveAvatar, 0, "Chat started. Say something in public chat near me.");
+    if (isActive(avatar))
+    {
+        return;
+    }
+    gActiveAvatars += [avatar];
+    gSessionEndTimes += [nowUnix() + SESSION_TIMEOUT_SEC];
+    gQueuedMessages += [""];
+    ensureListen();
+    llRegionSayTo(avatar, 0, "Chat started. Say something in public chat near me.");
     updateDebugTexture(avatar);
 }
 
-endSession(string message)
+endSession(key avatar, string message)
 {
-    key oldAvatar = gActiveAvatar;
-    resetSession();
-    if (oldAvatar != NULL_KEY)
+    integer index = findActiveIndex(avatar);
+    if (index == -1)
     {
-        llRegionSayTo(oldAvatar, 0, message);
+        return;
+    }
+    gActiveAvatars = llDeleteSubList(gActiveAvatars, index, index);
+    gSessionEndTimes = llDeleteSubList(gSessionEndTimes, index, index);
+    gQueuedMessages = llDeleteSubList(gQueuedMessages, index, index);
+    integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
+    if (inflightIndex != -1)
+    {
+        gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+    }
+    llRegionSayTo(avatar, 0, message);
+    if (llGetListLength(gActiveAvatars) == 0 && gListen != -1)
+    {
+        llListenRemove(gListen);
+        gListen = -1;
+        scheduleNextHint();
     }
 }
 
@@ -203,38 +274,35 @@ default
     touch_start(integer total_number)
     {
         key toucher = llDetectedKey(0);
-        if (gActiveAvatar != NULL_KEY)
+        if (isActive(toucher))
         {
-            if (toucher == gActiveAvatar)
-            {
-                endSession("Session ended. Touch me again to talk.");
-            }
-            else
-            {
-                llRegionSayTo(toucher, 0, "I'm busy right now. Please try again soon.");
-            }
+            endSession(toucher, "Session ended. Touch me again to talk.");
             return;
         }
-
         startSession(toucher);
     }
 
     listen(integer channel, string name, key id, string message)
     {
-        if (id != gActiveAvatar)
+        if (!isActive(id))
         {
             return;
         }
 
-        gSessionEndTime = nowUnix() + SESSION_TIMEOUT_SEC;
-
-        if (gInFlight)
+        integer index = findActiveIndex(id);
+        if (index == -1)
         {
-            gQueuedMessage = message;
+            return;
+        }
+        gSessionEndTimes = llListReplaceList(gSessionEndTimes, [nowUnix() + SESSION_TIMEOUT_SEC], index, index);
+
+        if (isInFlight(id))
+        {
+            setQueuedMessage(id, message);
             return;
         }
 
-        sendMessage(message);
+        sendMessage(id, message);
     }
 
     http_response(key request_id, integer status, list metadata, string body)
@@ -256,7 +324,18 @@ default
             llSetTexture((key)profileKey, DEBUG_PROFILE_FACE);
             return;
         }
-        gInFlight = FALSE;
+        integer requestIndex = llListFindList(gRequestMap, [request_id]);
+        if (requestIndex == -1)
+        {
+            return;
+        }
+        key activeAvatar = llList2Key(gRequestMap, requestIndex + 1);
+        gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 1);
+        integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
+        if (inflightIndex != -1)
+        {
+            gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+        }
         string replyType = llJsonValueType(body, ["reply"]);
         string reply = "";
         if (replyType == JSON_STRING)
@@ -275,15 +354,15 @@ default
             llOwnerSay(debugBody);
         }
 
-        if (gActiveAvatar == NULL_KEY)
+        if (!isActive(activeAvatar))
         {
-            gQueuedMessage = "";
             return;
         }
 
         if (status != 200)
         {
-            llRegionSayTo(gActiveAvatar, 0, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
+            updateDebugTexture(activeAvatar);
+            llRegionSayTo(activeAvatar, 0, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
         }
         else
         {
@@ -292,24 +371,27 @@ default
                 string okValue = llJsonGetValue(body, ["ok"]);
                 if (okValue == JSON_INVALID)
                 {
-                    llRegionSayTo(gActiveAvatar, 0, "ERROR Invalid JSON response: Sorry, I glitched. Try again.");
+                    updateDebugTexture(activeAvatar);
+                    llRegionSayTo(activeAvatar, 0, "ERROR Invalid JSON response: Sorry, I glitched. Try again.");
                 }
                 else
                 {
-                    llRegionSayTo(gActiveAvatar, 0, "ERROR Missing reply in server response: Sorry, I glitched. Try again.");
+                    updateDebugTexture(activeAvatar);
+                    llRegionSayTo(activeAvatar, 0, "ERROR Missing reply in server response: Sorry, I glitched. Try again.");
                 }
             }
             else
             {
-                llRegionSayTo(gActiveAvatar, 0, reply);
+                updateDebugTexture(activeAvatar);
+                llRegionSayTo(activeAvatar, 0, reply);
             }
         }
 
-        if (gQueuedMessage != "")
+        string queued = getQueuedMessage(activeAvatar);
+        if (queued != "")
         {
-            string queued = gQueuedMessage;
-            gQueuedMessage = "";
-            sendMessage(queued);
+            clearQueuedMessage(activeAvatar);
+            sendMessage(activeAvatar, queued);
         }
     }
 
@@ -334,12 +416,19 @@ default
     timer()
     {
         integer now = nowUnix();
-        if (gActiveAvatar != NULL_KEY)
+        integer count = llGetListLength(gActiveAvatars);
+        integer index;
+        for (index = count - 1; index >= 0; --index)
         {
-            if (now >= gSessionEndTime)
+            integer sessionEnd = llList2Integer(gSessionEndTimes, index);
+            if (now >= sessionEnd)
             {
-                endSession("Session ended. Touch me again to talk.");
+                key avatar = llList2Key(gActiveAvatars, index);
+                endSession(avatar, "Session ended. Touch me again to talk.");
             }
+        }
+        if (llGetListLength(gActiveAvatars) > 0)
+        {
             return;
         }
 
@@ -352,7 +441,7 @@ default
 
     sensor(integer total_number)
     {
-        if (gActiveAvatar != NULL_KEY)
+        if (llGetListLength(gActiveAvatars) > 0)
         {
             return;
         }
