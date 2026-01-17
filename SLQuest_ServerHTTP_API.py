@@ -32,6 +32,7 @@ CHAT_ROOT = BASE_DIR / "chat"
 NPCS_ROOT = BASE_DIR / "npcs"
 NPC_BASE_DIR = NPCS_ROOT / "_base"
 NPC_BASE_SYSTEM_PATH = NPC_BASE_DIR / "system.md"
+NPC_GENERAL_SYSTEM_PATH = NPCS_ROOT / "general_npc.md"
 OPENAI_TRACE_DIR = LOGS_ROOT / "openai_requests"
 SLQUEST_ADMIN_TOKEN = (os.getenv("SLQUEST_ADMIN_TOKEN") or "").strip()
 RUN_LOG_PATH = LOGS_ROOT / f"SLQuest_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
@@ -409,12 +410,15 @@ def build_instructions(npc_id: str) -> str:
         "otherwise answer from conversation context."
     )
     base_text = read_text_if_exists(NPC_BASE_SYSTEM_PATH).strip()
+    general_text = read_text_if_exists(NPC_GENERAL_SYSTEM_PATH).strip()
     npc_text = read_text_if_exists(npc_system_path(npc_id)).strip()
-    if not base_text and not npc_text:
+    if not base_text and not general_text and not npc_text:
         return fallback
     parts: list[str] = []
     if base_text:
         parts.append(base_text)
+    if general_text:
+        parts.append(general_text)
     parts.append(f"NPC ID: {npc_id}.")
     if npc_text:
         parts.append(npc_text)
