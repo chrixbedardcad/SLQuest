@@ -192,7 +192,12 @@ default
     http_response(key request_id, integer status, list metadata, string body)
     {
         gInFlight = FALSE;
-        string reply = llJsonGetValue(body, ["reply"]);
+        integer replyType = llJsonValueType(body, ["reply"]);
+        string reply = "";
+        if (replyType == JSON_STRING)
+        {
+            reply = llJsonGetValue(body, ["reply"]);
+        }
 
         if (DEBUG)
         {
@@ -217,9 +222,17 @@ default
         }
         else
         {
-            if (reply == JSON_INVALID)
+            if (replyType == JSON_INVALID)
             {
-                llRegionSayTo(gActiveAvatar, 0, "ERROR JSON_INVALID: Sorry, I glitched. Try again.");
+                string okValue = llJsonGetValue(body, ["ok"]);
+                if (okValue == JSON_INVALID)
+                {
+                    llRegionSayTo(gActiveAvatar, 0, "ERROR Invalid JSON response: Sorry, I glitched. Try again.");
+                }
+                else
+                {
+                    llRegionSayTo(gActiveAvatar, 0, "ERROR Missing reply in server response: Sorry, I glitched. Try again.");
+                }
             }
             else
             {
