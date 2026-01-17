@@ -1,5 +1,6 @@
 string SERVER_BASE = "http://slquest.duckdns.org:8001";
 string NPC_ID = "SLQuest_DefaultNPC";
+string PROFILE_PAGE_BASE = "https://world.secondlife.com/resident/";
 integer SESSION_TIMEOUT_SEC = 90;
 integer IDLE_HINT_COOLDOWN_SEC = 45;
 integer DEBUG = TRUE;
@@ -22,6 +23,23 @@ integer gNextGlobalGreetAt = 0;
 list gGreetMemory = [];
 key gProfileRequest = NULL_KEY;
 key gProfileAvatar = NULL_KEY;
+
+string extractProfileImageKey(string body)
+{
+    string profile_key_prefix = "<meta name=\"imageid\" content=\"";
+    integer startIndex = llSubStringIndex(body, profile_key_prefix);
+    if (startIndex == -1)
+    {
+        return "";
+    }
+    startIndex += llStringLength(profile_key_prefix);
+    integer endIndex = llSubStringIndex(llGetSubString(body, startIndex, -1), "\"");
+    if (endIndex == -1)
+    {
+        return "";
+    }
+    return llGetSubString(body, startIndex, startIndex + endIndex - 1);
+}
 
 integer nowUnix()
 {
@@ -57,7 +75,11 @@ updateDebugTexture(key avatar)
         return;
     }
     gProfileAvatar = avatar;
-    gProfileRequest = llRequestAgentData(avatar, DATA_IMAGE);
+    gProfileRequest = llHTTPRequest(
+        PROFILE_PAGE_BASE + (string)avatar,
+        [HTTP_METHOD, "GET"],
+        ""
+    );
 }
 
 integer findGreetIndex(key avatar)
@@ -215,6 +237,23 @@ default
 
     http_response(key request_id, integer status, list metadata, string body)
     {
+        if (request_id == gProfileRequest)
+        {
+            gProfileRequest = NULL_KEY;
+            if (status != 200 || gProfileAvatar == NULL_KEY)
+            {
+                llSetTexture(TEXTURE_BLANK, DEBUG_PROFILE_FACE);
+                return;
+            }
+            string profileKey = extractProfileImageKey(body);
+            if (profileKey == "")
+            {
+                llSetTexture(TEXTURE_BLANK, DEBUG_PROFILE_FACE);
+                return;
+            }
+            llSetTexture((key)profileKey, DEBUG_PROFILE_FACE);
+            return;
+        }
         gInFlight = FALSE;
         string replyType = llJsonValueType(body, ["reply"]);
         string reply = "";
