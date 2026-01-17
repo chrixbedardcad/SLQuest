@@ -20,6 +20,8 @@ integer gSessionEndTime = 0;
 integer gNextHintTime = 0;
 integer gNextGlobalGreetAt = 0;
 list gGreetMemory = [];
+key gProfileRequest = NULL_KEY;
+key gProfileAvatar = NULL_KEY;
 
 integer nowUnix()
 {
@@ -47,16 +49,15 @@ updateDebugTexture(key avatar)
     {
         return;
     }
-    key profileTexture = TEXTURE_BLANK;
-    if (avatar != NULL_KEY)
+    if (avatar == NULL_KEY)
     {
-        profileTexture = llGetProfilePicture(avatar);
-        if (profileTexture == NULL_KEY)
-        {
-            profileTexture = TEXTURE_BLANK;
-        }
+        gProfileRequest = NULL_KEY;
+        gProfileAvatar = NULL_KEY;
+        llSetTexture(TEXTURE_BLANK, DEBUG_PROFILE_FACE);
+        return;
     }
-    llSetTexture(profileTexture, DEBUG_PROFILE_FACE);
+    gProfileAvatar = avatar;
+    gProfileRequest = llRequestAgentData(avatar, DATA_PROFILE_IMAGE);
 }
 
 integer findGreetIndex(key avatar)
@@ -119,6 +120,8 @@ resetSession()
     gQueuedMessage = "";
     gSessionEndTime = 0;
     scheduleNextHint();
+    gProfileRequest = NULL_KEY;
+    gProfileAvatar = NULL_KEY;
 }
 
 string buildPayload(string message)
@@ -267,6 +270,24 @@ default
             gQueuedMessage = "";
             sendMessage(queued);
         }
+    }
+
+    dataserver(key query_id, string data)
+    {
+        if (query_id != gProfileRequest)
+        {
+            return;
+        }
+        key profileTexture = (key)data;
+        if (profileTexture == NULL_KEY)
+        {
+            profileTexture = TEXTURE_BLANK;
+        }
+        if (gProfileAvatar != NULL_KEY)
+        {
+            llSetTexture(profileTexture, DEBUG_PROFILE_FACE);
+        }
+        gProfileRequest = NULL_KEY;
     }
 
     timer()
