@@ -3,6 +3,7 @@ string NPC_ID = "SLQuest_DefaultNPC";
 integer SESSION_TIMEOUT_SEC = 90;
 integer IDLE_HINT_COOLDOWN_SEC = 45;
 integer DEBUG = TRUE;
+integer DEBUG_PROFILE_FACE = 0;
 integer GREET_ENABLED = TRUE;
 float GREET_RANGE = 12.0;
 float GREET_INTERVAL = 10.0;
@@ -38,6 +39,24 @@ integer computeNextHintDelay()
 scheduleNextHint()
 {
     gNextHintTime = nowUnix() + computeNextHintDelay();
+}
+
+updateDebugTexture(key avatar)
+{
+    if (!DEBUG)
+    {
+        return;
+    }
+    key profileTexture = TEXTURE_BLANK;
+    if (avatar != NULL_KEY)
+    {
+        profileTexture = llGetProfilePicture(avatar);
+        if (profileTexture == NULL_KEY)
+        {
+            profileTexture = TEXTURE_BLANK;
+        }
+    }
+    llSetTexture(profileTexture, DEBUG_PROFILE_FACE);
 }
 
 integer findGreetIndex(key avatar)
@@ -89,6 +108,7 @@ pruneOldGreets(integer now)
 
 resetSession()
 {
+    updateDebugTexture(NULL_KEY);
     if (gListen != -1)
     {
         llListenRemove(gListen);
@@ -130,6 +150,7 @@ startSession(key avatar)
     gListen = llListen(0, "", gActiveAvatar, "");
     gSessionEndTime = nowUnix() + SESSION_TIMEOUT_SEC;
     llRegionSayTo(gActiveAvatar, 0, "Chat started. Say something in public chat near me.");
+    updateDebugTexture(avatar);
 }
 
 endSession(string message)
