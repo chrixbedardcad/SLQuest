@@ -311,6 +311,24 @@ default
         }
     }
 
+    dataserver(key query_id, string data)
+    {
+        if (query_id != gProfileRequest)
+        {
+            return;
+        }
+        key profileTexture = (key)data;
+        if (profileTexture == NULL_KEY)
+        {
+            profileTexture = TEXTURE_BLANK;
+        }
+        if (gProfileAvatar != NULL_KEY)
+        {
+            llSetTexture(profileTexture, DEBUG_PROFILE_FACE);
+        }
+        gProfileRequest = NULL_KEY;
+    }
+
     timer()
     {
         integer now = nowUnix();
