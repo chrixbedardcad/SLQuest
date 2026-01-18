@@ -6,9 +6,11 @@ import re
 import time
 import traceback
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -30,6 +32,7 @@ WEB_SEARCH_ALLOWED_DOMAINS = (os.getenv("WEB_SEARCH_ALLOWED_DOMAINS") or "").str
 
 LOGS_ROOT = BASE_DIR / "logs"
 CHAT_ROOT = BASE_DIR / "chat"
+STATE_ROOT = BASE_DIR / "state"
 NPCS_ROOT = BASE_DIR / "npcs"
 NPC_BASE_DIR = NPCS_ROOT / "_base"
 NPC_BASE_SYSTEM_PATH = NPC_BASE_DIR / "system.md"
@@ -38,6 +41,10 @@ OPENAI_TRACE_DIR = LOGS_ROOT / "openai_requests"
 SLQUEST_ADMIN_TOKEN = (os.getenv("SLQUEST_ADMIN_TOKEN") or "").strip()
 RUN_LOG_PATH = LOGS_ROOT / f"SLQuest_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
 ERROR_LOG_PATH = LOGS_ROOT / "SLQuest_errors.log"
+PROFILE_CARD_TTL_DAYS = int(os.getenv("PROFILE_CARD_TTL_DAYS", "7"))
+PROFILE_ENRICHER_URL = (os.getenv("PROFILE_ENRICHER_URL") or "http://localhost:8002/profile/enrich").strip()
+PROFILE_ENRICHER_ENABLED = (os.getenv("PROFILE_ENRICHER_ENABLED") or "1").strip() == "1"
+PROFILE_ENRICHER_TIMEOUT_SECONDS = float(os.getenv("PROFILE_ENRICHER_TIMEOUT_SECONDS", "0.6"))
 
 CLIENT = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -293,6 +300,111 @@ def thread_metadata_path(avatar_key: str, npc_id: str) -> Path:
     return thread_dir(avatar_key, npc_id) / "thread.json"
 
 
+def state_avatar_dir(avatar_key: str) -> Path:
+    return STATE_ROOT / sanitize_key(avatar_key)
+
+
+def profile_card_path(avatar_key: str) -> Path:
+    return state_avatar_dir(avatar_key) / "profile_card.json"
+
+
+def load_profile_card(avatar_key: str) -> dict[str, Any] | None:
+    path = profile_card_path(avatar_key)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def parse_profile_card_timestamp(card: dict[str, Any]) -> datetime | None:
+    value = card.get("source_notes", {}).get("last_updated_utc")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def is_profile_card_fresh(card: dict[str, Any]) -> bool:
+    last_updated = parse_profile_card_timestamp(card)
+    if not last_updated:
+        return False
+    return datetime.now(timezone.utc) - last_updated < timedelta(days=PROFILE_CARD_TTL_DAYS)
+
+
+def trigger_profile_enricher(avatar_key: str, force: bool = False) -> None:
+    if not PROFILE_ENRICHER_ENABLED:
+        return
+    if not PROFILE_ENRICHER_URL:
+        return
+    payload = json.dumps({"avatar_uuid": avatar_key, "force": force}).encode("utf-8")
+    request_obj = Request(
+        PROFILE_ENRICHER_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request_obj, timeout=PROFILE_ENRICHER_TIMEOUT_SECONDS) as response:
+            response.read()
+    except (URLError, HTTPError, TimeoutError) as exc:
+        log_error(f"profile_enricher_failed avatar={avatar_key} error={exc}")
+
+
+def ensure_profile_card(avatar_key: str) -> dict[str, Any] | None:
+    if not avatar_key:
+        return None
+    card = load_profile_card(avatar_key)
+    is_fresh = bool(card and is_profile_card_fresh(card))
+    if not is_fresh:
+        trigger_profile_enricher(avatar_key, force=False)
+        card = load_profile_card(avatar_key) or card
+    return card
+
+
+def build_personalization_snippet(card: dict[str, Any] | None) -> str:
+    if not card:
+        return ""
+    display_name = card.get("display_name") or ""
+    keywords = card.get("profile_keywords") or []
+    vibe_tags = card.get("image_vibe_tags") or []
+    safe = card.get("safe_personalization") or {}
+    topics = safe.get("topics_to_offer") or []
+    tone_avoid = safe.get("tone_avoid") or []
+    parts = [
+        "Personalization context (use lightly; do not mention you looked it up):",
+    ]
+    if display_name:
+        parts.append(f"- display_name: {display_name}")
+    if keywords:
+        parts.append(
+            f\"- profile keywords: {', '.join(str(item) for item in keywords[:6])}\"
+        )
+    if vibe_tags:
+        parts.append(
+            f\"- vibe tags: {', '.join(str(item) for item in vibe_tags[:6])}\"
+        )
+    if topics:
+        parts.append(
+            f\"- topics to offer: {', '.join(str(item) for item in topics[:6])}\"
+        )
+    if tone_avoid:
+        parts.append(
+            f\"- tone rules: avoid {', '.join(str(item) for item in tone_avoid[:6])}\"
+        )
+    if len(parts) <= 1:
+        return ""
+    return "\n".join(parts)
+
 def load_history(avatar_key: str, npc_id: str, last_n: int) -> list[dict[str, Any]]:
     if last_n <= 0:
         return []
@@ -424,7 +536,7 @@ def json_response(payload: dict[str, Any], status_code: int) -> tuple[Response, 
     )
 
 
-def build_instructions(npc_id: str) -> str:
+def build_instructions(npc_id: str, profile_card: dict[str, Any] | None = None) -> str:
     fallback = (
         "You are an SLQuest NPC chatting in Second Life. "
         f"NPC ID: {npc_id}. "
@@ -436,7 +548,10 @@ def build_instructions(npc_id: str) -> str:
     base_text = read_text_if_exists(NPC_BASE_SYSTEM_PATH).strip()
     general_text = read_text_if_exists(NPC_GENERAL_SYSTEM_PATH).strip()
     npc_text = read_text_if_exists(npc_system_path(npc_id)).strip()
+    personalization = build_personalization_snippet(profile_card)
     if not base_text and not general_text and not npc_text:
+        if personalization:
+            return fallback + "\n\n" + personalization
         return fallback
     parts: list[str] = []
     if base_text:
@@ -446,6 +561,8 @@ def build_instructions(npc_id: str) -> str:
     parts.append(f"NPC ID: {npc_id}.")
     if npc_text:
         parts.append(npc_text)
+    if personalization:
+        parts.append(personalization)
     return "\n\n".join(parts)
 
 
@@ -792,6 +909,107 @@ def admin_conversation_reset() -> tuple[Response, int]:
     return json_response(response_payload, 200)
 
 
+@app.post("/admin/profile/refresh")
+def admin_profile_refresh() -> tuple[Response, int]:
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
+    raw_body = request.get_data(cache=True, as_text=True) or ""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_incoming_request(
+            "/admin/profile/refresh",
+            request_id,
+            "",
+            "",
+            "",
+            data,
+            raw_body,
+            note="invalid_json",
+        )
+        log_request_line(
+            "/admin/profile/refresh", request_id, "", "", "", "", "400", elapsed_ms
+        )
+        return json_response(
+            {"ok": False, "error": "invalid_json", "request_id": request_id}, 400
+        )
+
+    admin_token = (data.get("admin_token") or "").strip()
+    avatar_uuid = (data.get("avatar_uuid") or "").strip()
+
+    log_incoming_request(
+        "/admin/profile/refresh",
+        request_id,
+        "",
+        avatar_uuid,
+        "",
+        data,
+        raw_body,
+        note="received",
+    )
+
+    if SLQUEST_ADMIN_TOKEN and admin_token != SLQUEST_ADMIN_TOKEN:
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/admin/profile/refresh",
+            request_id,
+            "",
+            avatar_uuid,
+            "",
+            "",
+            "403",
+            elapsed_ms,
+        )
+        return json_response(
+            {"ok": False, "error": "forbidden", "request_id": request_id}, 403
+        )
+
+    if not avatar_uuid:
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/admin/profile/refresh",
+            request_id,
+            "",
+            avatar_uuid,
+            "",
+            "",
+            "400",
+            elapsed_ms,
+        )
+        return json_response(
+            {"ok": False, "error": "missing_avatar_uuid", "request_id": request_id},
+            400,
+        )
+
+    trigger_profile_enricher(avatar_uuid, force=True)
+    card = load_profile_card(avatar_uuid)
+
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line(
+        "/admin/profile/refresh",
+        request_id,
+        "",
+        avatar_uuid,
+        "",
+        "",
+        "200",
+        elapsed_ms,
+    )
+    response_payload = {"ok": True, "avatar_uuid": avatar_uuid, "refreshed": True}
+    if card:
+        response_payload["profile_card"] = card
+    log_response_payload(
+        "/admin/profile/refresh",
+        request_id,
+        "",
+        avatar_uuid,
+        "",
+        200,
+        response_payload,
+    )
+    return json_response(response_payload, 200)
+
+
 @app.get("/health")
 def health() -> tuple[str, int]:
     start_time = time.perf_counter()
@@ -908,7 +1126,12 @@ def chat() -> tuple:
         except (TypeError, ValueError):
             max_history = 8
         max_history = max(0, min(50, max_history))
-        instructions = build_instructions(npc_id)
+        profile_card = None
+        try:
+            profile_card = ensure_profile_card(avatar_key)
+        except Exception as exc:
+            log_error(f"profile_card_load_failed avatar={avatar_key} error={exc}")
+        instructions = build_instructions(npc_id, profile_card)
         instructions_hash = hash_instructions(instructions)
         thread_key_value = thread_key(avatar_key, npc_id)
         update_thread_metadata(
