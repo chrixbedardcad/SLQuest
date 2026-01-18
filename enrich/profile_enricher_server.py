@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+
+if __package__ is None:
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from enrich.profile_enricher import get_or_create_profile_card, log_line
 
