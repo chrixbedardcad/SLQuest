@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError, HTTPError
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -174,7 +173,9 @@ def extract_keywords(*texts: str, limit: int = 8) -> list[str]:
 
 def fetch_corrade_profile(avatar_uuid: str) -> dict[str, Any]:
     if not CORRADE_PROFILE_ENDPOINT:
+        log_line(f"corrade_profile_skipped avatar={avatar_uuid} reason=no_endpoint")
         return {}
+    log_line(f"corrade_profile_start avatar={avatar_uuid}")
     payload = {
         "avatar_uuid": avatar_uuid,
         "fields": ["display_name", "about", "interests", "profile_text"],
@@ -189,8 +190,14 @@ def fetch_corrade_profile(avatar_uuid: str) -> dict[str, Any]:
         method="POST",
     )
     try:
+        start_time = time.perf_counter()
         with urlopen(request, timeout=CORRADE_TIMEOUT_SECONDS) as response:
             body = response.read().decode("utf-8")
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            status_code = getattr(response, "status", "unknown")
+            log_line(
+                f"corrade_profile_ok avatar={avatar_uuid} status={status_code} elapsed_ms={elapsed_ms}"
+            )
     except (URLError, HTTPError, TimeoutError) as exc:
         log_line(f"corrade_profile_failed avatar={avatar_uuid} error={exc}")
         return {}
@@ -201,6 +208,9 @@ def fetch_corrade_profile(avatar_uuid: str) -> dict[str, Any]:
         return {}
     if not isinstance(data, dict):
         return {}
+    log_line(
+        f"corrade_profile_parsed avatar={avatar_uuid} keys={len(list(data.keys()))}"
+    )
     return data
 
 
@@ -208,8 +218,14 @@ def fetch_image_uuid_from_web(avatar_uuid: str) -> str | None:
     url = f"https://world.secondlife.com/resident/{avatar_uuid}"
     request = Request(url, headers={"User-Agent": "SLQuestProfileEnricher/1.0"})
     try:
+        start_time = time.perf_counter()
         with urlopen(request, timeout=4.0) as response:
             html = response.read().decode("utf-8", errors="ignore")
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            status_code = getattr(response, "status", "unknown")
+            log_line(
+                f"web_profile_ok avatar={avatar_uuid} status={status_code} elapsed_ms={elapsed_ms}"
+            )
     except (URLError, HTTPError, TimeoutError) as exc:
         log_line(f"web_profile_fetch_failed avatar={avatar_uuid} error={exc}")
         return None
@@ -221,12 +237,20 @@ def fetch_image_uuid_from_web(avatar_uuid: str) -> str | None:
 
 def download_profile_image(image_uuid: str) -> bytes | None:
     if not PROFILE_IMAGE_URL_TEMPLATE:
+        log_line(f"profile_image_skipped image_uuid={image_uuid} reason=no_template")
         return None
     url = PROFILE_IMAGE_URL_TEMPLATE.format(image_uuid=image_uuid)
     request = Request(url, headers={"User-Agent": "SLQuestProfileEnricher/1.0"})
     try:
+        start_time = time.perf_counter()
         with urlopen(request, timeout=5.0) as response:
-            return response.read()
+            payload = response.read()
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            status_code = getattr(response, "status", "unknown")
+            log_line(
+                f"profile_image_ok image_uuid={image_uuid} status={status_code} bytes={len(payload)} elapsed_ms={elapsed_ms}"
+            )
+            return payload
     except (URLError, HTTPError, TimeoutError) as exc:
         log_line(f"profile_image_download_failed image_uuid={image_uuid} error={exc}")
         return None
@@ -269,6 +293,9 @@ def build_profile_card(avatar_uuid: str) -> dict[str, Any]:
         about_text = str(corrade_data.get("about") or corrade_data.get("profile_text") or "")
         interests_text = str(corrade_data.get("interests") or "")
     keywords = extract_keywords(about_text, interests_text)
+    log_line(
+        f"keyword_extract avatar={avatar_uuid} about_len={len(about_text)} interests_len={len(interests_text)} keywords={len(keywords)}"
+    )
 
     image_uuid = None
     image_analyzed = False
@@ -288,6 +315,11 @@ def build_profile_card(avatar_uuid: str) -> dict[str, Any]:
             image_bytes = download_profile_image(image_uuid)
             image_vibe_tags = vibe_tags_from_image_bytes(image_bytes)
             image_analyzed = bool(image_bytes)
+            log_line(
+                f"image_vibe_tags avatar={avatar_uuid} tags={len(image_vibe_tags)} analyzed={int(image_analyzed)}"
+            )
+    else:
+        log_line(f"profile_image_disabled avatar={avatar_uuid}")
 
     card = {
         "avatar_uuid": avatar_uuid,
@@ -312,9 +344,11 @@ def get_or_create_profile_card(avatar_uuid: str, force: bool = False) -> dict[st
         log_line(f"cache_hit avatar={avatar_uuid}")
         return existing
     if existing:
-        log_line(f"cache_stale avatar={avatar_uuid}")
+        log_line(
+            f"cache_stale avatar={avatar_uuid} ttl_days={PROFILE_CARD_TTL_DAYS}"
+        )
     else:
-        log_line(f"cache_miss avatar={avatar_uuid}")
+        log_line(f"cache_miss avatar={avatar_uuid} ttl_days={PROFILE_CARD_TTL_DAYS}")
     card = build_profile_card(avatar_uuid)
     save_profile_card(avatar_uuid, card)
     return card

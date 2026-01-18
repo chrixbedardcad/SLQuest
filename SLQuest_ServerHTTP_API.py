@@ -343,8 +343,10 @@ def is_profile_card_fresh(card: dict[str, Any]) -> bool:
 
 def trigger_profile_enricher(avatar_key: str, force: bool = False) -> None:
     if not PROFILE_ENRICHER_ENABLED:
+        log_line(RUN_LOG_PATH, f"profile_enricher_disabled avatar={avatar_key}")
         return
     if not PROFILE_ENRICHER_URL:
+        log_error(f"profile_enricher_missing_url avatar={avatar_key}")
         return
     payload = json.dumps({"avatar_uuid": avatar_key, "force": force}).encode("utf-8")
     request_obj = Request(
@@ -354,8 +356,15 @@ def trigger_profile_enricher(avatar_key: str, force: bool = False) -> None:
         method="POST",
     )
     try:
+        start_time = time.perf_counter()
         with urlopen(request_obj, timeout=PROFILE_ENRICHER_TIMEOUT_SECONDS) as response:
             response.read()
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            status_code = getattr(response, "status", "unknown")
+            log_line(
+                RUN_LOG_PATH,
+                f"profile_enricher_ok avatar={avatar_key} status={status_code} elapsed_ms={elapsed_ms}",
+            )
     except (URLError, HTTPError, TimeoutError) as exc:
         log_error(f"profile_enricher_failed avatar={avatar_key} error={exc}")
 
@@ -366,6 +375,7 @@ def ensure_profile_card(avatar_key: str) -> dict[str, Any] | None:
     card = load_profile_card(avatar_key)
     is_fresh = bool(card and is_profile_card_fresh(card))
     if not is_fresh:
+        log_line(RUN_LOG_PATH, f"profile_card_refresh_needed avatar={avatar_key}")
         trigger_profile_enricher(avatar_key, force=False)
         card = load_profile_card(avatar_key) or card
     return card
@@ -1132,6 +1142,11 @@ def chat() -> tuple:
         except Exception as exc:
             log_error(f"profile_card_load_failed avatar={avatar_key} error={exc}")
         instructions = build_instructions(npc_id, profile_card)
+        if profile_card:
+            log_line(
+                RUN_LOG_PATH,
+                f"profile_card_applied avatar={avatar_key} npc_id={npc_id}",
+            )
         instructions_hash = hash_instructions(instructions)
         thread_key_value = thread_key(avatar_key, npc_id)
         update_thread_metadata(
