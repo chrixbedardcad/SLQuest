@@ -24,6 +24,7 @@ integer gNextGlobalGreetAt = 0;
 list gGreetMemory = [];
 key gProfileRequest = NULL_KEY;
 key gProfileAvatar = NULL_KEY;
+integer gProfileClearAt = 0;
 
 string extractProfileImageKey(string body)
 {
@@ -146,6 +147,7 @@ resetSession()
     scheduleNextHint();
     gProfileRequest = NULL_KEY;
     gProfileAvatar = NULL_KEY;
+    gProfileClearAt = 0;
 }
 
 integer findActiveIndex(key avatar)
@@ -233,6 +235,7 @@ startSession(key avatar)
     ensureListen();
     llRegionSayTo(avatar, 0, "Chat started. Say something in public chat near me.");
     updateDebugTexture(avatar);
+    gProfileClearAt = 0;
 }
 
 endSession(key avatar, string message)
@@ -256,6 +259,7 @@ endSession(key avatar, string message)
         llListenRemove(gListen);
         gListen = -1;
         scheduleNextHint();
+        gProfileClearAt = nowUnix() + IDLE_HINT_COOLDOWN_SEC;
     }
 }
 
@@ -264,7 +268,7 @@ default
     state_entry()
     {
         resetSession();
-        llSetTimerEvent(0);
+        llSetTimerEvent(1.0);
         if (GREET_ENABLED)
         {
             llSensorRepeat("", NULL_KEY, AGENT, GREET_RANGE, PI, GREET_INTERVAL);
@@ -432,6 +436,11 @@ default
         if (llGetListLength(gActiveAvatars) > 0)
         {
             return;
+        }
+        if (gProfileClearAt > 0 && now >= gProfileClearAt)
+        {
+            updateDebugTexture(NULL_KEY);
+            gProfileClearAt = 0;
         }
 
         if (now >= gNextHintTime)
