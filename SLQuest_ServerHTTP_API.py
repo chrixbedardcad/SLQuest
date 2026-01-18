@@ -672,6 +672,7 @@ def chat() -> tuple:
     region = (data.get("region") or "").strip()
     timestamp = (data.get("ts") or datetime.now(timezone.utc).isoformat())
     allow_web_search = parse_bool(data.get("allow_web_search"))
+    reset_conversation = parse_bool(data.get("reset_conversation"))
 
     log_incoming_request(
         "/chat",
@@ -773,6 +774,8 @@ def chat() -> tuple:
 
         if use_conversation:
             try:
+                if reset_conversation:
+                    delete_conversation_id(avatar_key, npc_id)
                 conversation_id = load_conversation_id(avatar_key, npc_id)
                 if not conversation_id:
                     conversation = CLIENT.conversations.create()
