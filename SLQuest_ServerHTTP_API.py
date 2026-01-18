@@ -5,6 +5,7 @@ import os
 import re
 import time
 import traceback
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -280,6 +281,10 @@ def conversation_id_path(avatar_key: str, npc_id: str) -> Path:
     return thread_dir(avatar_key, npc_id) / "conversation_id.txt"
 
 
+def instructions_hash_path(avatar_key: str, npc_id: str) -> Path:
+    return thread_dir(avatar_key, npc_id) / "instructions_hash.txt"
+
+
 def history_json_path(avatar_key: str, npc_id: str) -> Path:
     return thread_dir(avatar_key, npc_id) / "history.json"
 
@@ -327,13 +332,32 @@ def load_conversation_id(avatar_key: str, npc_id: str) -> str | None:
     return content or None
 
 
+def load_instructions_hash(avatar_key: str, npc_id: str) -> str | None:
+    path = instructions_hash_path(avatar_key, npc_id)
+    if not path.exists():
+        return None
+    content = path.read_text(encoding="utf-8").strip()
+    return content or None
+
+
 def save_conversation_id(avatar_key: str, npc_id: str, conversation_id: str) -> None:
     path = conversation_id_path(avatar_key, npc_id)
     path.write_text(conversation_id.strip(), encoding="utf-8")
 
 
+def save_instructions_hash(avatar_key: str, npc_id: str, instructions_hash: str) -> None:
+    path = instructions_hash_path(avatar_key, npc_id)
+    path.write_text(instructions_hash.strip(), encoding="utf-8")
+
+
 def delete_conversation_id(avatar_key: str, npc_id: str) -> None:
     path = conversation_id_path(avatar_key, npc_id)
+    if path.exists():
+        path.unlink()
+
+
+def delete_instructions_hash(avatar_key: str, npc_id: str) -> None:
+    path = instructions_hash_path(avatar_key, npc_id)
     if path.exists():
         path.unlink()
 
@@ -423,6 +447,10 @@ def build_instructions(npc_id: str) -> str:
     if npc_text:
         parts.append(npc_text)
     return "\n\n".join(parts)
+
+
+def hash_instructions(instructions: str) -> str:
+    return hashlib.sha256(instructions.encode("utf-8")).hexdigest()
 
 
 def build_messages(history: list[dict[str, Any]], message: str) -> list[dict[str, str]]:
@@ -516,6 +544,30 @@ def log_web_search_sources(
         f"web_search_sources={source_list}"
     )
     log_line(RUN_LOG_PATH, line)
+
+
+def create_conversation_with_developer(
+    request_id: str,
+    client_req_id: str,
+    avatar_key: str,
+    npc_id: str,
+    instructions: str,
+) -> str:
+    request_payload = {
+        "items": [
+            {
+                "type": "message",
+                "role": "developer",
+                "content": instructions,
+            }
+        ]
+    }
+    log_openai_request(request_id, client_req_id, avatar_key, npc_id, request_payload)
+    conversation = CLIENT.conversations.create(**request_payload)
+    conversation_id = getattr(conversation, "id", None)
+    if not conversation_id:
+        raise RuntimeError("conversation_create_empty_id")
+    return conversation_id
 
 
 @app.post("/admin/npc/upsert")
@@ -632,6 +684,110 @@ def admin_npc_upsert() -> tuple[Response, int]:
     response_payload = {"ok": True, "npc_id": npc_id, "updated": True}
     log_response_payload(
         "/admin/npc/upsert", request_id, "", "", npc_id, 200, response_payload
+    )
+    return json_response(response_payload, 200)
+
+
+@app.post("/admin/conversation/reset")
+def admin_conversation_reset() -> tuple[Response, int]:
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
+    raw_body = request.get_data(cache=True, as_text=True) or ""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_incoming_request(
+            "/admin/conversation/reset",
+            request_id,
+            "",
+            "",
+            "",
+            data,
+            raw_body,
+            note="invalid_json",
+        )
+        log_request_line(
+            "/admin/conversation/reset", request_id, "", "", "", "", "400", elapsed_ms
+        )
+        return json_response(
+            {"ok": False, "error": "invalid_json", "request_id": request_id}, 400
+        )
+
+    admin_token = (data.get("admin_token") or "").strip()
+    avatar_uuid = (data.get("avatar_uuid") or "").strip()
+    npc_id = (data.get("npc_id") or "").strip()
+
+    log_incoming_request(
+        "/admin/conversation/reset",
+        request_id,
+        "",
+        avatar_uuid,
+        npc_id,
+        data,
+        raw_body,
+        note="received",
+    )
+
+    if SLQUEST_ADMIN_TOKEN and admin_token != SLQUEST_ADMIN_TOKEN:
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/admin/conversation/reset",
+            request_id,
+            "",
+            avatar_uuid,
+            npc_id,
+            "",
+            "403",
+            elapsed_ms,
+        )
+        return json_response(
+            {"ok": False, "error": "forbidden", "request_id": request_id}, 403
+        )
+
+    if not avatar_uuid or not npc_id:
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/admin/conversation/reset",
+            request_id,
+            "",
+            avatar_uuid,
+            npc_id,
+            "",
+            "400",
+            elapsed_ms,
+        )
+        return json_response(
+            {"ok": False, "error": "missing_fields", "request_id": request_id}, 400
+        )
+
+    delete_conversation_id(avatar_uuid, npc_id)
+    delete_instructions_hash(avatar_uuid, npc_id)
+
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line(
+        "/admin/conversation/reset",
+        request_id,
+        "",
+        avatar_uuid,
+        npc_id,
+        "",
+        "200",
+        elapsed_ms,
+    )
+    response_payload = {
+        "ok": True,
+        "avatar_uuid": avatar_uuid,
+        "npc_id": npc_id,
+        "reset": True,
+    }
+    log_response_payload(
+        "/admin/conversation/reset",
+        request_id,
+        "",
+        avatar_uuid,
+        npc_id,
+        200,
+        response_payload,
     )
     return json_response(response_payload, 200)
 
@@ -753,6 +909,7 @@ def chat() -> tuple:
             max_history = 8
         max_history = max(0, min(50, max_history))
         instructions = build_instructions(npc_id)
+        instructions_hash = hash_instructions(instructions)
         thread_key_value = thread_key(avatar_key, npc_id)
         update_thread_metadata(
             avatar_key,
@@ -776,14 +933,24 @@ def chat() -> tuple:
             try:
                 if reset_conversation:
                     delete_conversation_id(avatar_key, npc_id)
+                    delete_instructions_hash(avatar_key, npc_id)
                 conversation_id = load_conversation_id(avatar_key, npc_id)
+                stored_hash = load_instructions_hash(avatar_key, npc_id)
+                if stored_hash != instructions_hash:
+                    delete_conversation_id(avatar_key, npc_id)
+                    delete_instructions_hash(avatar_key, npc_id)
+                    conversation_id = None
                 if not conversation_id:
-                    conversation = CLIENT.conversations.create()
-                    conversation_id = getattr(conversation, "id", None)
-                    if conversation_id:
-                        save_conversation_id(avatar_key, npc_id, conversation_id)
-                    else:
-                        raise RuntimeError("conversation_create_empty_id")
+                    # Developer prompt is stored once as a conversation item; we don’t resend instructions each turn.
+                    conversation_id = create_conversation_with_developer(
+                        request_id,
+                        client_req_id,
+                        avatar_key,
+                        npc_id,
+                        instructions,
+                    )
+                    save_conversation_id(avatar_key, npc_id, conversation_id)
+                    save_instructions_hash(avatar_key, npc_id, instructions_hash)
             except Exception as exc:
                 conversation_id = None
                 conversation_failure = exc
@@ -793,7 +960,6 @@ def chat() -> tuple:
             if hasattr(CLIENT, "responses"):
                 request_payload: dict[str, Any] = {
                     "model": model,
-                    "instructions": instructions,
                     "tool_choice": "auto",
                 }
                 if use_thread and conversation_id:
@@ -801,6 +967,7 @@ def chat() -> tuple:
                     request_payload["conversation"] = conversation_id
                     request_payload["truncation"] = "auto"
                 else:
+                    request_payload["instructions"] = instructions
                     history = load_history(avatar_key, npc_id, last_n=max_history)
                     request_payload["input"] = build_messages(history, message)
                 if effective_web:
@@ -854,7 +1021,21 @@ def chat() -> tuple:
                     if is_conversation_invalid(exc):
                         delete_conversation_id(avatar_key, npc_id)
                         conversation_id = None
-                        reply_text = request_openai(use_thread=False)
+                        try:
+                            conversation_id = create_conversation_with_developer(
+                                request_id,
+                                client_req_id,
+                                avatar_key,
+                                npc_id,
+                                instructions,
+                            )
+                            save_conversation_id(avatar_key, npc_id, conversation_id)
+                            save_instructions_hash(
+                                avatar_key, npc_id, instructions_hash
+                            )
+                            reply_text = request_openai(use_thread=True)
+                        except Exception:
+                            reply_text = request_openai(use_thread=False)
                     else:
                         raise
             else:
