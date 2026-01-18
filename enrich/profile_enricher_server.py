@@ -31,12 +31,20 @@ def profile_enrich():
     payload = request.get_json(silent=True) or {}
     avatar_uuid = (payload.get("avatar_uuid") or "").strip()
     avatar_name = (payload.get("avatar_name") or "").strip()
+    avatar_display_name = (payload.get("avatar_display_name") or "").strip()
+    avatar_username = (payload.get("avatar_username") or "").strip()
     force = bool(payload.get("force"))
     if not avatar_uuid:
         log_line("profile_enrich_invalid request=missing_avatar_uuid")
         return json_error("avatar_uuid_required", 400)
     try:
-        card = get_or_create_profile_card(avatar_uuid, force=force, avatar_name=avatar_name)
+        card = get_or_create_profile_card(
+            avatar_uuid,
+            force=force,
+            avatar_name=avatar_name,
+            avatar_display_name=avatar_display_name,
+            avatar_username=avatar_username,
+        )
     except Exception as exc:
         log_line(f"profile_enrich_failed avatar={avatar_uuid} error={exc}")
         return json_error(f"enrichment_failed: {exc}", 500)

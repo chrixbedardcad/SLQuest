@@ -195,7 +195,9 @@ string buildPayload(key avatar, string message)
     return llList2Json(JSON_OBJECT, [
         "npc_id", NPC_ID,
         "avatar_key", (string)avatar,
-        "avatar_name", llKey2Name(avatar),
+        "avatar_name", llGetUsername(avatar),
+        "avatar_display_name", llGetDisplayName(avatar),
+        "avatar_username", llGetUsername(avatar),
         "object_key", (string)llGetKey(),
         "object_name", llGetObjectName(),
         "region", llGetRegionName(),

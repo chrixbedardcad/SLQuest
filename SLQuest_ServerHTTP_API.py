@@ -346,8 +346,22 @@ def is_profile_card_fresh(card: dict[str, Any]) -> bool:
     return datetime.now(timezone.utc) - last_updated < timedelta(days=PROFILE_CARD_TTL_DAYS)
 
 
+def normalize_username(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    lowered = value.lower()
+    if lowered.endswith(" resident"):
+        return value[: -len(" resident")].strip()
+    return value
+
+
 def trigger_profile_enricher(
-    avatar_key: str, force: bool = False, avatar_name: str = ""
+    avatar_key: str,
+    force: bool = False,
+    avatar_name: str = "",
+    avatar_display_name: str = "",
+    avatar_username: str = "",
 ) -> None:
     if not PROFILE_ENRICHER_ENABLED:
         log_line(RUN_LOG_PATH, f"profile_enricher_disabled avatar={avatar_key}")
@@ -358,6 +372,10 @@ def trigger_profile_enricher(
     payload_dict = {"avatar_uuid": avatar_key, "force": force}
     if avatar_name:
         payload_dict["avatar_name"] = avatar_name
+    if avatar_display_name:
+        payload_dict["avatar_display_name"] = avatar_display_name
+    if avatar_username:
+        payload_dict["avatar_username"] = avatar_username
     payload = json.dumps(payload_dict).encode("utf-8")
     request_obj = Request(
         PROFILE_ENRICHER_URL,
@@ -379,37 +397,51 @@ def trigger_profile_enricher(
         log_error(f"profile_enricher_failed avatar={avatar_key} error={exc}")
 
 
-def ensure_profile_card(avatar_key: str, avatar_name: str = "") -> dict[str, Any] | None:
+def ensure_profile_card(
+    avatar_key: str,
+    avatar_name: str = "",
+    avatar_display_name: str = "",
+    avatar_username: str = "",
+) -> dict[str, Any] | None:
     if not avatar_key:
         return None
     card = load_profile_card(avatar_key)
     is_fresh = bool(card and is_profile_card_fresh(card))
     if not is_fresh:
         log_line(RUN_LOG_PATH, f"profile_card_refresh_needed avatar={avatar_key}")
-        trigger_profile_enricher(avatar_key, force=False, avatar_name=avatar_name)
+        trigger_profile_enricher(
+            avatar_key,
+            force=False,
+            avatar_name=avatar_name,
+            avatar_display_name=avatar_display_name,
+            avatar_username=avatar_username,
+        )
         card = load_profile_card(avatar_key) or card
-    if card and avatar_name:
+    safe_display_name = avatar_display_name.strip()
+    safe_username = normalize_username(avatar_username or avatar_name)
+    if card and (safe_username or safe_display_name):
         updated = False
-        safe_name = avatar_name.strip()
-        if safe_name:
-            username = (card.get("username") or "").strip()
-            display_name = (card.get("display_name") or "").strip()
-            if not username or username == "Unknown":
-                card["username"] = safe_name
-                updated = True
-            if not display_name or display_name == "Unknown":
-                card["display_name"] = safe_name
-                updated = True
-            if updated:
-                source_notes = card.get("source_notes")
-                if not isinstance(source_notes, dict):
-                    source_notes = {}
-                source_notes["lsl_avatar_name_used"] = True
-                source_notes["last_updated_utc"] = datetime.now(timezone.utc).isoformat(
-                    timespec="seconds"
-                )
-                card["source_notes"] = source_notes
-                save_profile_card(avatar_key, card)
+        username = (card.get("username") or "").strip()
+        display_name = (card.get("display_name") or "").strip()
+        if safe_username and (not username or username == "Unknown"):
+            card["username"] = safe_username
+            updated = True
+        if safe_display_name and (not display_name or display_name == "Unknown"):
+            card["display_name"] = safe_display_name
+            updated = True
+        if updated:
+            source_notes = card.get("source_notes")
+            if not isinstance(source_notes, dict):
+                source_notes = {}
+            if safe_username:
+                source_notes["lsl_username_used"] = True
+            if safe_display_name:
+                source_notes["lsl_display_name_used"] = True
+            source_notes["last_updated_utc"] = datetime.now(timezone.utc).isoformat(
+                timespec="seconds"
+            )
+            card["source_notes"] = source_notes
+            save_profile_card(avatar_key, card)
     return card
 
 
@@ -1087,6 +1119,8 @@ def chat() -> tuple:
     message = (data.get("message") or "").strip()
     avatar_key = (data.get("avatar_key") or "").strip()
     avatar_name = (data.get("avatar_name") or "").strip()
+    avatar_display_name = (data.get("avatar_display_name") or "").strip()
+    avatar_username = (data.get("avatar_username") or "").strip()
     npc_id = (data.get("npc_id") or "SLQuest_DefaultNPC").strip()
     object_key = (data.get("object_key") or "").strip()
     region = (data.get("region") or "").strip()
@@ -1174,7 +1208,12 @@ def chat() -> tuple:
         max_history = max(0, min(50, max_history))
         profile_card = None
         try:
-            profile_card = ensure_profile_card(avatar_key, avatar_name=avatar_name)
+            profile_card = ensure_profile_card(
+                avatar_key,
+                avatar_name=avatar_name,
+                avatar_display_name=avatar_display_name,
+                avatar_username=avatar_username,
+            )
         except Exception as exc:
             log_error(f"profile_card_load_failed avatar={avatar_key} error={exc}")
         instructions = build_instructions(npc_id, profile_card)
