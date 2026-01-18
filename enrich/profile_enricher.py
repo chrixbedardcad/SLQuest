@@ -248,11 +248,17 @@ def fetch_image_uuid_from_web(avatar_uuid: str, username: str = "") -> str | Non
     return match.group(1)
 
 
-def download_profile_image(image_uuid: str) -> bytes | None:
+def download_profile_image(image_uuid: str | None, username: str) -> bytes | None:
     if not PROFILE_IMAGE_URL_TEMPLATE:
         log_line(f"profile_image_skipped image_uuid={image_uuid} reason=no_template")
         return None
-    url = PROFILE_IMAGE_URL_TEMPLATE.format(image_uuid=image_uuid)
+    if "{image_uuid}" in PROFILE_IMAGE_URL_TEMPLATE and not image_uuid:
+        log_line("profile_image_skipped reason=missing_image_uuid")
+        return None
+    if "{username}" in PROFILE_IMAGE_URL_TEMPLATE and not username:
+        log_line("profile_image_skipped reason=missing_username")
+        return None
+    url = PROFILE_IMAGE_URL_TEMPLATE.format(image_uuid=image_uuid or "", username=username)
     request = Request(url, headers={"User-Agent": "SLQuestProfileEnricher/1.0"})
     try:
         start_time = time.perf_counter()
@@ -338,17 +344,18 @@ def build_profile_card(
     image_vibe_tags: list[str] = []
     web_profile_used = False
     if PROFILE_IMAGE_ENABLED:
+        template_uses_username = "{username}" in PROFILE_IMAGE_URL_TEMPLATE
         if isinstance(corrade_data, dict):
             for key in ("image_uuid", "profile_image_uuid", "imageid", "profile_image_id"):
                 value = corrade_data.get(key)
                 if isinstance(value, str) and value.strip():
                     image_uuid = value.strip()
                     break
-        if not image_uuid:
+        if not image_uuid and not template_uses_username:
             image_uuid = fetch_image_uuid_from_web(avatar_uuid, username=username)
             web_profile_used = bool(image_uuid)
-        if image_uuid:
-            image_bytes = download_profile_image(image_uuid)
+        if image_uuid or template_uses_username:
+            image_bytes = download_profile_image(image_uuid, username=username)
             image_vibe_tags = vibe_tags_from_image_bytes(image_bytes)
             image_analyzed = bool(image_bytes)
             log_line(
