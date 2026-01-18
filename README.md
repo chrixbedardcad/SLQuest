@@ -86,6 +86,7 @@ curl -X POST http://localhost:8001/chat \
 
 - The profile enricher builds `state/<avatar_uuid>/profile_card.json` with a TTL (default 7 days).
 - It only uses public in-world profile text plus optional image vibe tags (no identity inference).
+- `PROFILE_IMAGE_URL_TEMPLATE` supports `{image_uuid}` and `{username}` placeholders to download profile images.
 - If enrichment fails, the NPC responder falls back without personalization.
 - Logs for enrichment live in `logs/profile_enricher.log`.
 - Refresh a profile card immediately with the admin endpoint:
