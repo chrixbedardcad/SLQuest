@@ -397,19 +397,19 @@ def build_personalization_snippet(card: dict[str, Any] | None) -> str:
         parts.append(f"- display_name: {display_name}")
     if keywords:
         parts.append(
-            f\"- profile keywords: {', '.join(str(item) for item in keywords[:6])}\"
+            f"- profile keywords: {', '.join(str(item) for item in keywords[:6])}"
         )
     if vibe_tags:
         parts.append(
-            f\"- vibe tags: {', '.join(str(item) for item in vibe_tags[:6])}\"
+            f"- vibe tags: {', '.join(str(item) for item in vibe_tags[:6])}"
         )
     if topics:
         parts.append(
-            f\"- topics to offer: {', '.join(str(item) for item in topics[:6])}\"
+            f"- topics to offer: {', '.join(str(item) for item in topics[:6])}"
         )
     if tone_avoid:
         parts.append(
-            f\"- tone rules: avoid {', '.join(str(item) for item in tone_avoid[:6])}\"
+            f"- tone rules: avoid {', '.join(str(item) for item in tone_avoid[:6])}"
         )
     if len(parts) <= 1:
         return ""
