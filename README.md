@@ -17,12 +17,28 @@ OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-5.2
 WEB_SEARCH_ENABLED=0
 WEB_SEARCH_ALLOWED_DOMAINS=
+SLQUEST_ADMIN_TOKEN=put_long_random_token_here
+PROFILE_CARD_TTL_DAYS=7
+PROFILE_ENRICHER_ENABLED=1
+PROFILE_ENRICHER_URL=http://localhost:8002/profile/enrich
+PROFILE_ENRICHER_TIMEOUT_SECONDS=0.6
+PROFILE_IMAGE_ENABLED=0
+PROFILE_IMAGE_URL_TEMPLATE=
+CORRADE_PROFILE_ENDPOINT=
+CORRADE_API_KEY=
+CORRADE_TIMEOUT_SECONDS=4.0
 ```
 
 Run the server:
 
 ```bash
 python SLQuest_ServerHTTP_API.py
+```
+
+Run the profile enricher service (separate process):
+
+```bash
+python enrich/profile_enricher_server.py
 ```
 
 ## LSL script setup
@@ -64,6 +80,20 @@ curl -X POST http://localhost:8001/chat \
 curl -X POST http://localhost:8001/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"Hello","avatar_key":"debug-avatar","npc_id":"SLQuest_DefaultNPC"}'
+```
+
+## Profile enricher notes
+
+- The profile enricher builds `state/<avatar_uuid>/profile_card.json` with a TTL (default 7 days).
+- It only uses public in-world profile text plus optional image vibe tags (no identity inference).
+- If enrichment fails, the NPC responder falls back without personalization.
+- Logs for enrichment live in `logs/profile_enricher.log`.
+- Refresh a profile card immediately with the admin endpoint:
+
+```bash
+curl -X POST http://localhost:8001/admin/profile/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"admin_token":"your_token","avatar_uuid":"00000000-0000-0000-0000-000000000000"}'
 ```
 
 ## Notes
