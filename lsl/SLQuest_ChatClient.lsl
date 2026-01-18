@@ -5,7 +5,7 @@ integer SESSION_TIMEOUT_SEC = 90;
 integer IDLE_HINT_COOLDOWN_SEC = 45;
 integer DEBUG = TRUE;
 integer DEBUG_PROFILE_FACE = ALL_SIDES;
-integer GREET_ENABLED = TRUE;
+integer GREET_ENABLED = FALSE;
 float GREET_RANGE = 12.0;
 float GREET_INTERVAL = 10.0;
 integer ALLOW_WEB_SEARCH = TRUE;
@@ -264,7 +264,7 @@ default
     state_entry()
     {
         resetSession();
-        llSetTimerEvent(5.0);
+        llSetTimerEvent(0);
         if (GREET_ENABLED)
         {
             llSensorRepeat("", NULL_KEY, AGENT, GREET_RANGE, PI, GREET_INTERVAL);
@@ -383,7 +383,9 @@ default
             else
             {
                 updateDebugTexture(activeAvatar);
-                llRegionSayTo(activeAvatar, 0, reply);
+               // llRegionSayTo(activeAvatar, 0, reply);
+               llSay(0,llGetDisplayName(activeAvatar) +": " + reply);
+                
             }
         }
 
