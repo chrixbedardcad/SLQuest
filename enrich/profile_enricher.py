@@ -281,12 +281,24 @@ def build_safe_personalization(keywords: list[str], vibe_tags: list[str]) -> dic
     }
 
 
-def build_profile_card(avatar_uuid: str) -> dict[str, Any]:
+def build_profile_card(avatar_uuid: str, avatar_name: str = "") -> dict[str, Any]:
     log_line(f"enrich_start avatar={avatar_uuid}")
     corrade_data = fetch_corrade_profile(avatar_uuid)
     display_name = (
         (corrade_data.get("display_name") or "").strip() if isinstance(corrade_data, dict) else ""
     )
+    avatar_name = (avatar_name or "").strip()
+    username = ""
+    if isinstance(corrade_data, dict):
+        for key in ("username", "legacy_name", "name", "avatar_name"):
+            value = corrade_data.get(key)
+            if isinstance(value, str) and value.strip():
+                username = value.strip()
+                break
+    if not username:
+        username = avatar_name
+    if not display_name and username:
+        display_name = username
     about_text = ""
     interests_text = ""
     if isinstance(corrade_data, dict):
@@ -324,11 +336,13 @@ def build_profile_card(avatar_uuid: str) -> dict[str, Any]:
     card = {
         "avatar_uuid": avatar_uuid,
         "display_name": display_name or "Unknown",
+        "username": username or "Unknown",
         "profile_keywords": keywords,
         "image_vibe_tags": image_vibe_tags,
         "safe_personalization": build_safe_personalization(keywords, image_vibe_tags),
         "source_notes": {
             "corrade_profiledata": bool(corrade_data),
+            "lsl_avatar_name_used": bool(avatar_name),
             "web_profile_used": web_profile_used,
             "image_analyzed": image_analyzed,
             "last_updated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -338,7 +352,9 @@ def build_profile_card(avatar_uuid: str) -> dict[str, Any]:
     return card
 
 
-def get_or_create_profile_card(avatar_uuid: str, force: bool = False) -> dict[str, Any]:
+def get_or_create_profile_card(
+    avatar_uuid: str, force: bool = False, avatar_name: str = ""
+) -> dict[str, Any]:
     existing = load_profile_card(avatar_uuid)
     if existing and not force and is_card_fresh(existing, PROFILE_CARD_TTL_DAYS):
         log_line(f"cache_hit avatar={avatar_uuid}")
@@ -349,7 +365,7 @@ def get_or_create_profile_card(avatar_uuid: str, force: bool = False) -> dict[st
         )
     else:
         log_line(f"cache_miss avatar={avatar_uuid} ttl_days={PROFILE_CARD_TTL_DAYS}")
-    card = build_profile_card(avatar_uuid)
+    card = build_profile_card(avatar_uuid, avatar_name=avatar_name)
     save_profile_card(avatar_uuid, card)
     return card
 
