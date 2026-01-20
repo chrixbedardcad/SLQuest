@@ -287,6 +287,11 @@ def html_unescape(value: str) -> str:
 def download_profile_image(
     image_uuid: str | None, username: str
 ) -> tuple[bytes | None, str | None]:
+    log_line(
+        "profile_image_download_start "
+        f"image_uuid={image_uuid or 'none'} username={username or 'none'} "
+        f"template_set={int(bool(PROFILE_IMAGE_URL_TEMPLATE))}"
+    )
     if not PROFILE_IMAGE_URL_TEMPLATE:
         log_line(f"profile_image_skipped image_uuid={image_uuid} reason=no_template")
         return None, None
@@ -307,11 +312,22 @@ def download_profile_image(
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             status_code = getattr(response, "status", "unknown")
             log_line(
-                f"profile_image_ok image_uuid={image_uuid} status={status_code} bytes={len(payload)} elapsed_ms={elapsed_ms}"
+                "profile_image_ok "
+                f"image_uuid={image_uuid} status={status_code} bytes={len(payload)} "
+                f"elapsed_ms={elapsed_ms} content_type={content_type or 'unknown'}"
             )
             return payload, content_type
-    except (URLError, HTTPError, TimeoutError) as exc:
-        log_line(f"profile_image_download_failed image_uuid={image_uuid} error={exc}")
+    except HTTPError as exc:
+        log_line(
+            "profile_image_download_failed "
+            f"image_uuid={image_uuid} status={exc.code} reason={exc.reason}"
+        )
+        return None, None
+    except (URLError, TimeoutError) as exc:
+        log_line(
+            "profile_image_download_failed "
+            f"image_uuid={image_uuid} error={type(exc).__name__}:{exc}"
+        )
         return None, None
 
 
@@ -383,12 +399,25 @@ def build_profile_card(
     if PROFILE_IMAGE_ENABLED:
         template_uses_username = "{username}" in PROFILE_IMAGE_URL_TEMPLATE
         log_line(
+            "profile_image_config "
+            f"avatar={avatar_uuid} template_set={int(bool(PROFILE_IMAGE_URL_TEMPLATE))} "
+            f"template_uses_username={int(template_uses_username)}"
+        )
+        log_line(
             f"profile_image_flow avatar={avatar_uuid} template_uses_username={int(template_uses_username)}"
         )
         if isinstance(web_profile, dict):
             value = web_profile.get("image_uuid")
             if isinstance(value, str) and value.strip():
                 image_uuid = value.strip()
+            else:
+                log_line(f"profile_image_no_uuid avatar={avatar_uuid}")
+        else:
+            log_line(f"profile_image_no_profile avatar={avatar_uuid}")
+        log_line(
+            "profile_image_identity "
+            f"avatar={avatar_uuid} image_uuid={image_uuid or 'none'} username={username or 'none'}"
+        )
         if image_uuid or template_uses_username:
             image_bytes, content_type = download_profile_image(image_uuid, username=username)
             image_vibe_tags = vibe_tags_from_image_bytes(image_bytes)
@@ -404,8 +433,18 @@ def build_profile_card(
                 ensure_dir(image_path.parent)
                 image_path.write_bytes(image_bytes)
                 log_line(f"profile_image_saved avatar={avatar_uuid} path={image_path.name}")
+            else:
+                log_line(f"profile_image_missing_bytes avatar={avatar_uuid}")
+        else:
+            log_line(
+                f"profile_image_missing_inputs avatar={avatar_uuid} template_uses_username={int(template_uses_username)}"
+            )
     else:
-        log_line(f"profile_image_disabled avatar={avatar_uuid}")
+        log_line(
+            "profile_image_disabled "
+            f"avatar={avatar_uuid} template_set={int(bool(PROFILE_IMAGE_URL_TEMPLATE))} "
+            f"env_flag={_PROFILE_IMAGE_ENABLED_ENV or 'unset'}"
+        )
 
     card = {
         "avatar_uuid": avatar_uuid,
