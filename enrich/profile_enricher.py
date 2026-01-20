@@ -25,6 +25,15 @@ _PROFILE_IMAGE_ENABLED_ENV = os.getenv("PROFILE_IMAGE_ENABLED")
 PROFILE_VISION_ENABLED = (os.getenv("PROFILE_VISION_ENABLED") or "0").strip() == "1"
 PROFILE_VISION_MODEL = (os.getenv("PROFILE_VISION_MODEL") or "gpt-4.1-mini").strip()
 PROFILE_VISION_MAX_TOKENS = int(os.getenv("PROFILE_VISION_MAX_TOKENS", "350"))
+PROFILE_IMAGE_DETAIL_ENABLED = (
+    (os.getenv("PROFILE_IMAGE_DETAIL_ENABLED") or "0").strip() == "1"
+)
+PROFILE_IMAGE_DETAIL_MODEL = (
+    os.getenv("PROFILE_IMAGE_DETAIL_MODEL") or PROFILE_VISION_MODEL
+).strip()
+PROFILE_IMAGE_DETAIL_MAX_TOKENS = int(
+    os.getenv("PROFILE_IMAGE_DETAIL_MAX_TOKENS", "650")
+)
 if _PROFILE_IMAGE_ENABLED_ENV is None:
     PROFILE_IMAGE_ENABLED = bool(PROFILE_IMAGE_URL_TEMPLATE)
 else:
@@ -124,6 +133,10 @@ def profile_detail_path(avatar_uuid: str) -> Path:
     return state_avatar_dir(avatar_uuid) / "profile_detail.txt"
 
 
+def profile_image_detail_path(avatar_uuid: str) -> Path:
+    return state_avatar_dir(avatar_uuid) / "profile_image_detail.txt"
+
+
 def profile_card_text_path(avatar_uuid: str) -> Path:
     return state_avatar_dir(avatar_uuid) / "profile_card.txt"
 
@@ -176,6 +189,12 @@ def save_profile_card(avatar_uuid: str, card: dict[str, Any]) -> None:
 
 def save_profile_detail(avatar_uuid: str, detail_text: str) -> None:
     path = profile_detail_path(avatar_uuid)
+    ensure_dir(path.parent)
+    path.write_text(detail_text, encoding="utf-8")
+
+
+def save_profile_image_detail(avatar_uuid: str, detail_text: str) -> None:
+    path = profile_image_detail_path(avatar_uuid)
     ensure_dir(path.parent)
     path.write_text(detail_text, encoding="utf-8")
 
@@ -478,6 +497,60 @@ def analyze_profile_image(
             return None
 
 
+def analyze_profile_image_detail(
+    avatar_uuid: str,
+    image_url: str | None,
+    image_bytes: bytes | None,
+    content_type: str | None,
+) -> str | None:
+    if not PROFILE_IMAGE_DETAIL_ENABLED:
+        return None
+    if not OPENAI_CLIENT:
+        log_line(f"profile_image_detail_disabled avatar={avatar_uuid} reason=missing_api_key")
+        return None
+    image_payload = build_image_input_payload(image_url, None, None)
+    fallback_payload = build_image_input_payload(None, image_bytes, content_type)
+    if not image_payload and not fallback_payload:
+        log_line(f"profile_image_detail_skipped avatar={avatar_uuid} reason=no_image")
+        return None
+    prompt = (
+        "Provide a detailed, neutral description of the avatar profile image. "
+        "Focus on visible styling details (hair, eyes, outfit, accessories, colors, "
+        "materials, pose, background, and overall vibe). "
+        "Do NOT infer sensitive traits such as gender/sex identity, age, ethnicity, "
+        "nationality, or real-world identity. Return plain text paragraphs."
+    )
+    for attempt in range(2):
+        try:
+            response = OPENAI_CLIENT.responses.create(
+                model=PROFILE_IMAGE_DETAIL_MODEL,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            image_payload or fallback_payload,
+                        ],
+                    }
+                ],
+                max_output_tokens=PROFILE_IMAGE_DETAIL_MAX_TOKENS,
+            )
+            detail_text = (response.output_text or "").strip()
+            if detail_text:
+                return detail_text
+            log_line(f"profile_image_detail_empty avatar={avatar_uuid}")
+            return None
+        except Exception as exc:
+            if attempt == 0 and image_payload and fallback_payload:
+                log_line(
+                    f"profile_image_detail_retry avatar={avatar_uuid} error={type(exc).__name__}:{exc}"
+                )
+                image_payload = None
+                continue
+            log_line(f"profile_image_detail_failed avatar={avatar_uuid} error={exc}")
+            return None
+
+
 def vibe_tags_from_image_bytes(image_bytes: bytes | None) -> list[str]:
     if not image_bytes:
         return []
@@ -628,6 +701,17 @@ def build_profile_card(
             log_line(
                 f"profile_vision_ok avatar={avatar_uuid} style_tags={len(style_tags)}"
             )
+
+    if image_url:
+        detail_text = analyze_profile_image_detail(
+            avatar_uuid,
+            image_url=image_url,
+            image_bytes=image_bytes if image_analyzed else None,
+            content_type=content_type,
+        )
+        if detail_text:
+            save_profile_image_detail(avatar_uuid, detail_text + "\n")
+            log_line(f"profile_image_detail_saved avatar={avatar_uuid}")
 
     safe_hooks = []
     if visual_profile:
