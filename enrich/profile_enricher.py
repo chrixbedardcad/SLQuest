@@ -194,11 +194,14 @@ def normalize_username(value: str) -> str:
     return value
 
 
-def fetch_web_profile(avatar_uuid: str, username: str = "") -> dict[str, Any]:
+def build_profile_url(avatar_uuid: str, username: str = "") -> str:
     if username:
-        url = f"https://my.secondlife.com/{username}"
-    else:
-        url = f"https://world.secondlife.com/resident/{avatar_uuid}"
+        safe_username = username.strip().strip("/")
+        return f"https://my.secondlife.com/{safe_username}/"
+    return f"https://world.secondlife.com/resident/{avatar_uuid}"
+
+
+def fetch_profile_html(avatar_uuid: str, url: str) -> str | None:
     log_line(f"web_profile_start avatar={avatar_uuid} url={url}")
     request = Request(url, headers={"User-Agent": "SLQuestProfileEnricher/1.0"})
     try:
@@ -210,22 +213,57 @@ def fetch_web_profile(avatar_uuid: str, username: str = "") -> dict[str, Any]:
             log_line(
                 f"web_profile_ok avatar={avatar_uuid} status={status_code} elapsed_ms={elapsed_ms}"
             )
+            return html
     except (URLError, HTTPError, TimeoutError) as exc:
         log_line(f"web_profile_fetch_failed avatar={avatar_uuid} error={exc}")
+        return None
+
+
+def strip_html_tags(value: str) -> str:
+    cleaned = re.sub(r"<[^>]+>", " ", value)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return html_unescape(cleaned).strip()
+
+
+def extract_biography(html_text: str) -> str:
+    match = re.search(
+        r"id=[\"']sl_about_text[\"'][^>]*>(.*?)</div>",
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return ""
+    return strip_html_tags(match.group(1))
+
+
+def fetch_web_profile(avatar_uuid: str, username: str = "") -> dict[str, Any]:
+    url = build_profile_url(avatar_uuid, username=username)
+    html_text = fetch_profile_html(avatar_uuid, url)
+    if html_text is None and username:
+        fallback_url = build_profile_url(avatar_uuid, username="")
+        log_line(f"web_profile_retry avatar={avatar_uuid} url={fallback_url}")
+        html_text = fetch_profile_html(avatar_uuid, fallback_url)
+        url = fallback_url
+    if html_text is None:
         return {}
     image_match = re.search(
         r"meta\s+name=\"imageid\"\s+content=\"([A-Fa-f0-9-]{36})\"",
-        html,
+        html_text,
         flags=re.IGNORECASE,
     )
     description_match = re.search(
         r"meta\s+name=\"description\"\s+content=\"([^\"]*)\"",
-        html,
+        html_text,
         flags=re.IGNORECASE,
     )
-    title_match = re.search(r"<title>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+    title_match = re.search(
+        r"<title>(.*?)</title>", html_text, flags=re.IGNORECASE | re.DOTALL
+    )
     display_name = html_unescape(title_match.group(1)).strip() if title_match else ""
     description = html_unescape(description_match.group(1)).strip() if description_match else ""
+    biography = extract_biography(html_text)
+    if biography:
+        description = biography
     image_uuid = image_match.group(1) if image_match else None
     if not image_uuid:
         log_line(f"web_profile_no_imageid avatar={avatar_uuid}")
