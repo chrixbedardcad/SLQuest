@@ -87,6 +87,7 @@ curl -X POST http://localhost:8001/chat \
 - The profile enricher builds `state/<avatar_uuid>/profile_card.json` with a TTL (default 7 days).
 - It also writes `state/<avatar_uuid>/profile_detail.txt` with scraped profile text for later use.
 - Profile data is scraped from public web profile pages; image downloads are saved to `state/<avatar_uuid>/profile_image.<ext>`.
+- `PROFILE_IMAGE_ENABLED` defaults to on when `PROFILE_IMAGE_URL_TEMPLATE` is set; set it to `0` to force-disable downloads.
 - `PROFILE_IMAGE_URL_TEMPLATE` supports `{image_uuid}` and `{username}` placeholders to download profile images.
 - If enrichment fails, the NPC responder falls back without personalization.
 - Logs for enrichment live in `logs/profile_enricher.log`.
