@@ -229,6 +229,7 @@ def fetch_image_uuid_from_web(avatar_uuid: str, username: str = "") -> str | Non
         url = f"https://my.secondlife.com/{username}"
     else:
         url = f"https://world.secondlife.com/resident/{avatar_uuid}"
+    log_line(f"web_profile_start avatar={avatar_uuid} url={url}")
     request = Request(url, headers={"User-Agent": "SLQuestProfileEnricher/1.0"})
     try:
         start_time = time.perf_counter()
@@ -244,6 +245,7 @@ def fetch_image_uuid_from_web(avatar_uuid: str, username: str = "") -> str | Non
         return None
     match = re.search(r"meta\s+name=\"imageid\"\s+content=\"([A-Fa-f0-9-]{36})\"", html)
     if not match:
+        log_line(f"web_profile_no_imageid avatar={avatar_uuid}")
         return None
     return match.group(1)
 
@@ -259,6 +261,7 @@ def download_profile_image(image_uuid: str | None, username: str) -> bytes | Non
         log_line("profile_image_skipped reason=missing_username")
         return None
     url = PROFILE_IMAGE_URL_TEMPLATE.format(image_uuid=image_uuid or "", username=username)
+    log_line(f"profile_image_request image_uuid={image_uuid} url={url}")
     request = Request(url, headers={"User-Agent": "SLQuestProfileEnricher/1.0"})
     try:
         start_time = time.perf_counter()
@@ -329,6 +332,12 @@ def build_profile_card(
         display_name = avatar_display_name
     if not display_name and username:
         display_name = username
+    log_line(
+        "enrich_identity "
+        f"avatar={avatar_uuid} username={username or 'Unknown'} display_name={display_name or 'Unknown'} "
+        f"corrade_data={int(bool(corrade_data))} lsl_username={int(bool(avatar_username))} "
+        f"lsl_display_name={int(bool(avatar_display_name))}"
+    )
     about_text = ""
     interests_text = ""
     if isinstance(corrade_data, dict):
@@ -345,6 +354,9 @@ def build_profile_card(
     web_profile_used = False
     if PROFILE_IMAGE_ENABLED:
         template_uses_username = "{username}" in PROFILE_IMAGE_URL_TEMPLATE
+        log_line(
+            f"profile_image_flow avatar={avatar_uuid} template_uses_username={int(template_uses_username)}"
+        )
         if isinstance(corrade_data, dict):
             for key in ("image_uuid", "profile_image_uuid", "imageid", "profile_image_id"):
                 value = corrade_data.get(key)
@@ -354,6 +366,8 @@ def build_profile_card(
         if not image_uuid and not template_uses_username:
             image_uuid = fetch_image_uuid_from_web(avatar_uuid, username=username)
             web_profile_used = bool(image_uuid)
+        elif not image_uuid and template_uses_username:
+            log_line(f"web_profile_skipped avatar={avatar_uuid} reason=template_uses_username")
         if image_uuid or template_uses_username:
             image_bytes = download_profile_image(image_uuid, username=username)
             image_vibe_tags = vibe_tags_from_image_bytes(image_bytes)
