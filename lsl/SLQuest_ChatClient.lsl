@@ -1,6 +1,7 @@
 string SERVER_BASE = "http://slquest.duckdns.org:8001";
 string NPC_ID = "SLQuest_DefaultNPC";
 string PROFILE_PAGE_BASE = "https://world.secondlife.com/resident/";
+// NOTE: Place SLQuest_CallbackReceiver.lsl in the same linkset so callbacks can be routed.
 integer SESSION_TIMEOUT_SEC = 90;
 integer IDLE_HINT_COOLDOWN_SEC = 45;
 integer DEBUG = TRUE;
@@ -12,6 +13,8 @@ integer ALLOW_WEB_SEARCH = TRUE;
 integer GREET_COOLDOWN_PER_AVATAR_SEC = 300;
 integer GREET_GLOBAL_COOLDOWN_SEC = 20;
 integer GREET_SKIP_OWNER = TRUE;
+integer LM_CB_TOKEN = 9100;
+integer LM_CB_REPLY = 9101;
 
 list gActiveAvatars = [];
 list gSessionEndTimes = [];
@@ -25,6 +28,7 @@ list gGreetMemory = [];
 key gProfileRequest = NULL_KEY;
 key gProfileAvatar = NULL_KEY;
 integer gProfileClearAt = 0;
+string gCallbackToken = "";
 
 string extractProfileImageKey(string body)
 {
@@ -190,7 +194,7 @@ clearQueuedMessage(key avatar)
     setQueuedMessage(avatar, "");
 }
 
-string buildPayload(key avatar, string message)
+string buildPayload(key avatar, string message, string clientReqId)
 {
     return llList2Json(JSON_OBJECT, [
         "npc_id", NPC_ID,
@@ -203,17 +207,26 @@ string buildPayload(key avatar, string message)
         "region", llGetRegionName(),
         "allow_web_search", ALLOW_WEB_SEARCH,
         "message", message,
+        "client_req_id", clientReqId,
+        "callback_token", gCallbackToken,
         "ts", llGetTimestamp()
     ]);
 }
 
 sendMessage(key avatar, string message)
 {
-    string payload = buildPayload(avatar, message);
+    string clientReqId = (string)llGenerateKey();
+    string payload = buildPayload(avatar, message, clientReqId);
     string url = SERVER_BASE + "/chat";
+    integer isAsync = FALSE;
+    if (gCallbackToken != "")
+    {
+        url = SERVER_BASE + "/chat_async";
+        isAsync = TRUE;
+    }
     gInFlightAvatars += [avatar];
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar];
+    gRequestMap += [requestId, avatar, isAsync];
 }
 
 ensureListen()
@@ -336,12 +349,8 @@ default
             return;
         }
         key activeAvatar = llList2Key(gRequestMap, requestIndex + 1);
-        gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 1);
-        integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
-        if (inflightIndex != -1)
-        {
-            gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
-        }
+        integer isAsync = llList2Integer(gRequestMap, requestIndex + 2);
+        gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 2);
         string replyType = llJsonValueType(body, ["reply"]);
         string reply = "";
         if (replyType == JSON_STRING)
@@ -363,6 +372,34 @@ default
         if (!isActive(activeAvatar))
         {
             return;
+        }
+
+        if (isAsync)
+        {
+            string okValue = llJsonGetValue(body, ["ok"]);
+            if (status != 200 || okValue != "true")
+            {
+                integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
+                if (inflightIndex != -1)
+                {
+                    gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+                }
+                updateDebugTexture(activeAvatar);
+                llRegionSayTo(activeAvatar, 0, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
+                string queued = getQueuedMessage(activeAvatar);
+                if (queued != "")
+                {
+                    clearQueuedMessage(activeAvatar);
+                    sendMessage(activeAvatar, queued);
+                }
+            }
+            return;
+        }
+
+        integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
+        if (inflightIndex != -1)
+        {
+            gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
         }
 
         if (status != 200)
@@ -400,6 +437,42 @@ default
         {
             clearQueuedMessage(activeAvatar);
             sendMessage(activeAvatar, queued);
+        }
+    }
+
+    link_message(integer sender, integer num, string str, key id)
+    {
+        if (num == LM_CB_TOKEN)
+        {
+            gCallbackToken = str;
+            return;
+        }
+        if (num != LM_CB_REPLY)
+        {
+            return;
+        }
+        key avatar = (key)llJsonGetValue(str, ["avatar_key"]);
+        string reply = llJsonGetValue(str, ["reply"]);
+        if (avatar == NULL_KEY || reply == "")
+        {
+            return;
+        }
+        integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
+        if (inflightIndex != -1)
+        {
+            gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+        }
+        if (!isActive(avatar))
+        {
+            return;
+        }
+        updateDebugTexture(avatar);
+        llRegionSayTo(avatar, 0, reply);
+        string queued = getQueuedMessage(avatar);
+        if (queued != "")
+        {
+            clearQueuedMessage(avatar);
+            sendMessage(avatar, queued);
         }
     }
 
