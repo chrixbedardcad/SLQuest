@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -18,9 +19,6 @@ LOGS_ROOT = BASE_DIR / "logs"
 PROFILE_CARD_TTL_DAYS = int(os.getenv("PROFILE_CARD_TTL_DAYS", "7"))
 PROFILE_IMAGE_ENABLED = (os.getenv("PROFILE_IMAGE_ENABLED", "0").strip() == "1")
 PROFILE_IMAGE_URL_TEMPLATE = (os.getenv("PROFILE_IMAGE_URL_TEMPLATE") or "").strip()
-CORRADE_PROFILE_ENDPOINT = (os.getenv("CORRADE_PROFILE_ENDPOINT") or "").strip()
-CORRADE_API_KEY = (os.getenv("CORRADE_API_KEY") or "").strip()
-CORRADE_TIMEOUT_SECONDS = float(os.getenv("CORRADE_TIMEOUT_SECONDS", "4.0"))
 
 STOPWORDS = {
     "about",
@@ -108,6 +106,15 @@ def profile_card_path(avatar_uuid: str) -> Path:
     return state_avatar_dir(avatar_uuid) / "profile_card.json"
 
 
+def profile_detail_path(avatar_uuid: str) -> Path:
+    return state_avatar_dir(avatar_uuid) / "profile_detail.txt"
+
+
+def profile_image_path(avatar_uuid: str, extension: str) -> Path:
+    safe_extension = extension.lstrip(".") or "bin"
+    return state_avatar_dir(avatar_uuid) / f"profile_image.{safe_extension}"
+
+
 def parse_last_updated(card: dict[str, Any]) -> datetime | None:
     value = card.get("source_notes", {}).get("last_updated_utc")
     if not isinstance(value, str):
@@ -149,6 +156,12 @@ def save_profile_card(avatar_uuid: str, card: dict[str, Any]) -> None:
     temp_path.replace(path)
 
 
+def save_profile_detail(avatar_uuid: str, detail_text: str) -> None:
+    path = profile_detail_path(avatar_uuid)
+    ensure_dir(path.parent)
+    path.write_text(detail_text, encoding="utf-8")
+
+
 def tokenize_keywords(text: str) -> list[str]:
     tokens = []
     for raw in re.split(r"[^A-Za-z0-9]+", text.lower()):
@@ -181,50 +194,7 @@ def normalize_username(value: str) -> str:
     return value
 
 
-def fetch_corrade_profile(avatar_uuid: str) -> dict[str, Any]:
-    if not CORRADE_PROFILE_ENDPOINT:
-        log_line(f"corrade_profile_skipped avatar={avatar_uuid} reason=no_endpoint")
-        return {}
-    log_line(f"corrade_profile_start avatar={avatar_uuid}")
-    payload = {
-        "avatar_uuid": avatar_uuid,
-        "fields": ["display_name", "about", "interests", "profile_text"],
-    }
-    headers = {"Content-Type": "application/json"}
-    if CORRADE_API_KEY:
-        headers["Authorization"] = f"Bearer {CORRADE_API_KEY}"
-    request = Request(
-        CORRADE_PROFILE_ENDPOINT,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    try:
-        start_time = time.perf_counter()
-        with urlopen(request, timeout=CORRADE_TIMEOUT_SECONDS) as response:
-            body = response.read().decode("utf-8")
-            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-            status_code = getattr(response, "status", "unknown")
-            log_line(
-                f"corrade_profile_ok avatar={avatar_uuid} status={status_code} elapsed_ms={elapsed_ms}"
-            )
-    except (URLError, HTTPError, TimeoutError) as exc:
-        log_line(f"corrade_profile_failed avatar={avatar_uuid} error={exc}")
-        return {}
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        log_line(f"corrade_profile_invalid_json avatar={avatar_uuid}")
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    log_line(
-        f"corrade_profile_parsed avatar={avatar_uuid} keys={len(list(data.keys()))}"
-    )
-    return data
-
-
-def fetch_image_uuid_from_web(avatar_uuid: str, username: str = "") -> str | None:
+def fetch_web_profile(avatar_uuid: str, username: str = "") -> dict[str, Any]:
     if username:
         url = f"https://my.secondlife.com/{username}"
     else:
@@ -242,24 +212,48 @@ def fetch_image_uuid_from_web(avatar_uuid: str, username: str = "") -> str | Non
             )
     except (URLError, HTTPError, TimeoutError) as exc:
         log_line(f"web_profile_fetch_failed avatar={avatar_uuid} error={exc}")
-        return None
-    match = re.search(r"meta\s+name=\"imageid\"\s+content=\"([A-Fa-f0-9-]{36})\"", html)
-    if not match:
+        return {}
+    image_match = re.search(
+        r"meta\s+name=\"imageid\"\s+content=\"([A-Fa-f0-9-]{36})\"",
+        html,
+        flags=re.IGNORECASE,
+    )
+    description_match = re.search(
+        r"meta\s+name=\"description\"\s+content=\"([^\"]*)\"",
+        html,
+        flags=re.IGNORECASE,
+    )
+    title_match = re.search(r"<title>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+    display_name = html_unescape(title_match.group(1)).strip() if title_match else ""
+    description = html_unescape(description_match.group(1)).strip() if description_match else ""
+    image_uuid = image_match.group(1) if image_match else None
+    if not image_uuid:
         log_line(f"web_profile_no_imageid avatar={avatar_uuid}")
-        return None
-    return match.group(1)
+    return {
+        "url": url,
+        "display_name": display_name,
+        "description": description,
+        "image_uuid": image_uuid,
+    }
 
 
-def download_profile_image(image_uuid: str | None, username: str) -> bytes | None:
+def html_unescape(value: str) -> str:
+    value = re.sub(r"\s+", " ", value or "")
+    return html.unescape(value).strip()
+
+
+def download_profile_image(
+    image_uuid: str | None, username: str
+) -> tuple[bytes | None, str | None]:
     if not PROFILE_IMAGE_URL_TEMPLATE:
         log_line(f"profile_image_skipped image_uuid={image_uuid} reason=no_template")
-        return None
+        return None, None
     if "{image_uuid}" in PROFILE_IMAGE_URL_TEMPLATE and not image_uuid:
         log_line("profile_image_skipped reason=missing_image_uuid")
-        return None
+        return None, None
     if "{username}" in PROFILE_IMAGE_URL_TEMPLATE and not username:
         log_line("profile_image_skipped reason=missing_username")
-        return None
+        return None, None
     url = PROFILE_IMAGE_URL_TEMPLATE.format(image_uuid=image_uuid or "", username=username)
     log_line(f"profile_image_request image_uuid={image_uuid} url={url}")
     request = Request(url, headers={"User-Agent": "SLQuestProfileEnricher/1.0"})
@@ -267,15 +261,16 @@ def download_profile_image(image_uuid: str | None, username: str) -> bytes | Non
         start_time = time.perf_counter()
         with urlopen(request, timeout=5.0) as response:
             payload = response.read()
+            content_type = response.headers.get("Content-Type", "")
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             status_code = getattr(response, "status", "unknown")
             log_line(
                 f"profile_image_ok image_uuid={image_uuid} status={status_code} bytes={len(payload)} elapsed_ms={elapsed_ms}"
             )
-            return payload
+            return payload, content_type
     except (URLError, HTTPError, TimeoutError) as exc:
         log_line(f"profile_image_download_failed image_uuid={image_uuid} error={exc}")
-        return None
+        return None, None
 
 
 def vibe_tags_from_image_bytes(image_bytes: bytes | None) -> list[str]:
@@ -310,24 +305,16 @@ def build_profile_card(
     avatar_username: str = "",
 ) -> dict[str, Any]:
     log_line(f"enrich_start avatar={avatar_uuid}")
-    corrade_data = fetch_corrade_profile(avatar_uuid)
-    display_name = (
-        (corrade_data.get("display_name") or "").strip() if isinstance(corrade_data, dict) else ""
-    )
     avatar_name = (avatar_name or "").strip()
     avatar_display_name = (avatar_display_name or "").strip()
     avatar_username = normalize_username(avatar_username or avatar_name)
     username = ""
-    if isinstance(corrade_data, dict):
-        for key in ("username", "legacy_name", "name", "avatar_name"):
-            value = corrade_data.get(key)
-            if isinstance(value, str) and value.strip():
-                username = value.strip()
-                break
     if not username and avatar_username:
         username = avatar_username
     if not username:
         username = avatar_name
+    web_profile = fetch_web_profile(avatar_uuid, username=avatar_username)
+    display_name = (web_profile.get("display_name") or "").strip()
     if not display_name and avatar_display_name:
         display_name = avatar_display_name
     if not display_name and username:
@@ -335,14 +322,13 @@ def build_profile_card(
     log_line(
         "enrich_identity "
         f"avatar={avatar_uuid} username={username or 'Unknown'} display_name={display_name or 'Unknown'} "
-        f"corrade_data={int(bool(corrade_data))} lsl_username={int(bool(avatar_username))} "
+        f"web_profile={int(bool(web_profile))} lsl_username={int(bool(avatar_username))} "
         f"lsl_display_name={int(bool(avatar_display_name))}"
     )
     about_text = ""
     interests_text = ""
-    if isinstance(corrade_data, dict):
-        about_text = str(corrade_data.get("about") or corrade_data.get("profile_text") or "")
-        interests_text = str(corrade_data.get("interests") or "")
+    if isinstance(web_profile, dict):
+        about_text = str(web_profile.get("description") or "")
     keywords = extract_keywords(about_text, interests_text)
     log_line(
         f"keyword_extract avatar={avatar_uuid} about_len={len(about_text)} interests_len={len(interests_text)} keywords={len(keywords)}"
@@ -351,30 +337,31 @@ def build_profile_card(
     image_uuid = None
     image_analyzed = False
     image_vibe_tags: list[str] = []
-    web_profile_used = False
+    web_profile_used = bool(web_profile)
     if PROFILE_IMAGE_ENABLED:
         template_uses_username = "{username}" in PROFILE_IMAGE_URL_TEMPLATE
         log_line(
             f"profile_image_flow avatar={avatar_uuid} template_uses_username={int(template_uses_username)}"
         )
-        if isinstance(corrade_data, dict):
-            for key in ("image_uuid", "profile_image_uuid", "imageid", "profile_image_id"):
-                value = corrade_data.get(key)
-                if isinstance(value, str) and value.strip():
-                    image_uuid = value.strip()
-                    break
-        if not image_uuid and not template_uses_username:
-            image_uuid = fetch_image_uuid_from_web(avatar_uuid, username=username)
-            web_profile_used = bool(image_uuid)
-        elif not image_uuid and template_uses_username:
-            log_line(f"web_profile_skipped avatar={avatar_uuid} reason=template_uses_username")
+        if isinstance(web_profile, dict):
+            value = web_profile.get("image_uuid")
+            if isinstance(value, str) and value.strip():
+                image_uuid = value.strip()
         if image_uuid or template_uses_username:
-            image_bytes = download_profile_image(image_uuid, username=username)
+            image_bytes, content_type = download_profile_image(image_uuid, username=username)
             image_vibe_tags = vibe_tags_from_image_bytes(image_bytes)
             image_analyzed = bool(image_bytes)
             log_line(
                 f"image_vibe_tags avatar={avatar_uuid} tags={len(image_vibe_tags)} analyzed={int(image_analyzed)}"
             )
+            if image_bytes:
+                extension = "bin"
+                if content_type and "/" in content_type:
+                    extension = content_type.split("/", 1)[-1].split(";")[0].strip()
+                image_path = profile_image_path(avatar_uuid, extension)
+                ensure_dir(image_path.parent)
+                image_path.write_bytes(image_bytes)
+                log_line(f"profile_image_saved avatar={avatar_uuid} path={image_path.name}")
     else:
         log_line(f"profile_image_disabled avatar={avatar_uuid}")
 
@@ -386,7 +373,7 @@ def build_profile_card(
         "image_vibe_tags": image_vibe_tags,
         "safe_personalization": build_safe_personalization(keywords, image_vibe_tags),
         "source_notes": {
-            "corrade_profiledata": bool(corrade_data),
+            "web_profiledata": bool(web_profile),
             "lsl_avatar_name_used": bool(avatar_name),
             "lsl_display_name_used": bool(avatar_display_name),
             "lsl_username_used": bool(avatar_username),
@@ -396,6 +383,15 @@ def build_profile_card(
         },
     }
     log_line(f"enrich_complete avatar={avatar_uuid} keywords={len(keywords)}")
+    detail_lines = [
+        f"avatar_uuid: {avatar_uuid}",
+        f"username: {username or 'Unknown'}",
+        f"display_name: {display_name or 'Unknown'}",
+        f"profile_url: {web_profile.get('url', '') if isinstance(web_profile, dict) else ''}",
+        f"summary: {about_text}".strip(),
+        "",
+    ]
+    save_profile_detail(avatar_uuid, "\n".join(detail_lines).strip() + "\n")
     return card
 
 
