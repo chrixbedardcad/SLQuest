@@ -5,16 +5,16 @@ import sys
 import time
 from datetime import datetime, timezone
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+
+load_dotenv(os.path.join(BASE_DIR, "SLQuest.env"))
 
 if __package__ is None:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from enrich.profile_enricher import get_or_create_profile_card, log_line
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(BASE_DIR, "SLQuest.env"))
 
 app = Flask(__name__)
 
