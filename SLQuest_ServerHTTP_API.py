@@ -29,6 +29,7 @@ OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-5.2").strip() or "gpt-5.2"
 WEB_SEARCH_ENABLED = (os.getenv("WEB_SEARCH_ENABLED") or "0").strip() == "1"
 WEB_SEARCH_ALLOWED_DOMAINS = (os.getenv("WEB_SEARCH_ALLOWED_DOMAINS") or "").strip()
+OPENAI_API_BASE = (os.getenv("OPENAI_API_BASE") or "https://api.openai.com").strip()
 
 LOGS_ROOT = BASE_DIR / "logs"
 CHAT_ROOT = BASE_DIR / "chat"
@@ -45,6 +46,9 @@ PROFILE_CARD_TTL_DAYS = int(os.getenv("PROFILE_CARD_TTL_DAYS", "7"))
 PROFILE_ENRICHER_URL = (os.getenv("PROFILE_ENRICHER_URL") or "http://localhost:8002/profile/enrich").strip()
 PROFILE_ENRICHER_ENABLED = (os.getenv("PROFILE_ENRICHER_ENABLED") or "1").strip() == "1"
 PROFILE_ENRICHER_TIMEOUT_SECONDS = float(os.getenv("PROFILE_ENRICHER_TIMEOUT_SECONDS", "0.6"))
+CONVERSATION_ADD_ITEM_TIMEOUT_SECONDS = float(
+    os.getenv("CONVERSATION_ADD_ITEM_TIMEOUT_SECONDS", "0.6")
+)
 
 CLIENT = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -450,11 +454,14 @@ def build_personalization_snippet(card: dict[str, Any] | None) -> str:
         return ""
     display_name = card.get("display_name") or ""
     username = card.get("username") or ""
-    keywords = card.get("profile_keywords") or []
-    vibe_tags = card.get("image_vibe_tags") or []
+    bio = card.get("bio") or {}
+    about_summary = bio.get("about_summary") or ""
+    visual = card.get("visual_profile") or {}
+    style_tags = visual.get("style_tags") or card.get("image_vibe_tags") or []
+    hair = visual.get("hair") or {}
+    eyes = visual.get("eyes") or {}
     safe = card.get("safe_personalization") or {}
-    topics = safe.get("topics_to_offer") or []
-    tone_avoid = safe.get("tone_avoid") or []
+    hooks = safe.get("safe_hooks") or []
     parts = [
         "Personalization context (use lightly; do not mention you looked it up):",
     ]
@@ -462,25 +469,86 @@ def build_personalization_snippet(card: dict[str, Any] | None) -> str:
         parts.append(f"- display_name: {display_name}")
     if username and username != display_name:
         parts.append(f"- username: {username}")
-    if keywords:
-        parts.append(
-            f"- profile keywords: {', '.join(str(item) for item in keywords[:6])}"
-        )
-    if vibe_tags:
-        parts.append(
-            f"- vibe tags: {', '.join(str(item) for item in vibe_tags[:6])}"
-        )
-    if topics:
-        parts.append(
-            f"- topics to offer: {', '.join(str(item) for item in topics[:6])}"
-        )
-    if tone_avoid:
-        parts.append(
-            f"- tone rules: avoid {', '.join(str(item) for item in tone_avoid[:6])}"
-        )
+    if about_summary:
+        parts.append(f"- about: {about_summary[:240]}")
+    if style_tags:
+        parts.append(f"- style tags: {', '.join(str(item) for item in style_tags[:6])}")
+    if hooks:
+        parts.append(f"- safe hooks: {', '.join(str(item) for item in hooks[:2])}")
+    hair_line = ", ".join(
+        item
+        for item in [hair.get("color"), hair.get("length"), hair.get("style")]
+        if item
+    )
+    eyes_line = ", ".join(item for item in [eyes.get("color"), eyes.get("notes")] if item)
+    if hair_line or eyes_line:
+        parts.append(f"- hair/eyes: {hair_line or 'unspecified'}; {eyes_line or 'unspecified'}")
     if len(parts) <= 1:
         return ""
+    # Keep this snippet short (<= ~12 lines) to avoid bloating prompts.
     return "\n".join(parts)
+
+
+def profile_fingerprint(card: dict[str, Any] | None) -> str:
+    if not card:
+        return ""
+    bio = card.get("bio") or {}
+    about_summary = (bio.get("about_summary") or "").strip().lower()
+    visual = card.get("visual_profile") or {}
+    style_tags = visual.get("style_tags") or card.get("image_vibe_tags") or []
+    safe = card.get("safe_personalization") or {}
+    hooks = safe.get("safe_hooks") or []
+    combined = "|".join(
+        [
+            about_summary,
+            ",".join(str(item).strip().lower() for item in style_tags),
+            ",".join(str(item).strip().lower() for item in hooks),
+        ]
+    )
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()
+
+
+def add_conversation_developer_item(
+    request_id: str, conversation_id: str, content: str
+) -> bool:
+    if not OPENAI_API_KEY:
+        log_error(
+            f"conversation_item_skipped request_id={request_id} reason=missing_api_key"
+        )
+        return False
+    payload = {
+        "items": [
+            {
+                "type": "message",
+                "role": "developer",
+                "content": content,
+            }
+        ]
+    }
+    url = f"{OPENAI_API_BASE}/v1/conversations/{conversation_id}/items"
+    request_obj = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request_obj, timeout=CONVERSATION_ADD_ITEM_TIMEOUT_SECONDS) as response:
+            response.read()
+            status_code = getattr(response, "status", "unknown")
+            log_line(
+                RUN_LOG_PATH,
+                f"conversation_item_added request_id={request_id} conversation={conversation_id} status={status_code}",
+            )
+            return True
+    except (URLError, HTTPError, TimeoutError) as exc:
+        log_error(
+            f"conversation_item_failed request_id={request_id} conversation={conversation_id} error={exc}"
+        )
+        return False
 
 def load_history(avatar_key: str, npc_id: str, last_n: int) -> list[dict[str, Any]]:
     if last_n <= 0:
@@ -565,6 +633,17 @@ def update_thread_metadata(avatar_key: str, npc_id: str, metadata: dict[str, Any
     path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def load_thread_metadata(avatar_key: str, npc_id: str) -> dict[str, Any]:
+    path = thread_metadata_path(avatar_key, npc_id)
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def trim_to_bytes(text: str, max_bytes: int) -> str:
     total = 0
     end_index = 0
@@ -640,6 +719,30 @@ def build_instructions(npc_id: str, profile_card: dict[str, Any] | None = None) 
         parts.append(npc_text)
     if personalization:
         parts.append(personalization)
+    return "\n\n".join(parts)
+
+
+def build_base_instructions(npc_id: str) -> str:
+    base_text = read_text_if_exists(NPC_BASE_SYSTEM_PATH).strip()
+    general_text = read_text_if_exists(NPC_GENERAL_SYSTEM_PATH).strip()
+    npc_text = read_text_if_exists(npc_system_path(npc_id)).strip()
+    if not base_text and not general_text and not npc_text:
+        return (
+            "You are an SLQuest NPC chatting in Second Life. "
+            f"NPC ID: {npc_id}. "
+            "Reply must be short for Second Life: aim <= 900 characters. "
+            "No markdown. One message only. "
+            "Use web search only if the user asks for up-to-date facts or checking something online; "
+            "otherwise answer from conversation context."
+        )
+    parts: list[str] = []
+    if base_text:
+        parts.append(base_text)
+    if general_text:
+        parts.append(general_text)
+    parts.append(f"NPC ID: {npc_id}.")
+    if npc_text:
+        parts.append(npc_text)
     return "\n\n".join(parts)
 
 
@@ -1217,13 +1320,16 @@ def chat() -> tuple:
         except Exception as exc:
             log_error(f"profile_card_load_failed avatar={avatar_key} error={exc}")
         instructions = build_instructions(npc_id, profile_card)
+        base_instructions = build_base_instructions(npc_id)
         if profile_card:
             log_line(
                 RUN_LOG_PATH,
                 f"profile_card_applied avatar={avatar_key} npc_id={npc_id}",
             )
-        instructions_hash = hash_instructions(instructions)
+        instructions_hash = hash_instructions(base_instructions)
         thread_key_value = thread_key(avatar_key, npc_id)
+        personalization_fingerprint = profile_fingerprint(profile_card)
+        existing_metadata = load_thread_metadata(avatar_key, npc_id)
         update_thread_metadata(
             avatar_key,
             npc_id,
@@ -1241,6 +1347,7 @@ def chat() -> tuple:
         use_conversation = hasattr(CLIENT, "conversations")
         conversation_id = None
         conversation_failure = None
+        conversation_created = False
 
         if use_conversation:
             try:
@@ -1264,10 +1371,38 @@ def chat() -> tuple:
                     )
                     save_conversation_id(avatar_key, npc_id, conversation_id)
                     save_instructions_hash(avatar_key, npc_id, instructions_hash)
+                    conversation_created = True
             except Exception as exc:
                 conversation_id = None
                 conversation_failure = exc
                 log_openai_exception(request_id, exc)
+
+        stored_fingerprint = existing_metadata.get("profile_fingerprint") or ""
+        should_update_fingerprint = True
+        if (
+            conversation_id
+            and personalization_fingerprint
+            and personalization_fingerprint != stored_fingerprint
+        ):
+            if not conversation_created:
+                update_text = build_personalization_snippet(profile_card)
+                if update_text:
+                    added = add_conversation_developer_item(
+                        request_id,
+                        conversation_id,
+                        f"Personalization update:\n{update_text}",
+                    )
+                    if not added:
+                        should_update_fingerprint = False
+                        log_error(
+                            f"personalization_update_failed request_id={request_id} avatar={avatar_key}"
+                        )
+        if should_update_fingerprint:
+            update_thread_metadata(
+                avatar_key,
+                npc_id,
+                {"profile_fingerprint": personalization_fingerprint},
+            )
 
         def request_openai(use_thread: bool) -> str:
             if hasattr(CLIENT, "responses"):
