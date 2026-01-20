@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
 import os
@@ -12,6 +13,8 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
+from openai import OpenAI
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 STATE_ROOT = BASE_DIR / "state"
 LOGS_ROOT = BASE_DIR / "logs"
@@ -19,10 +22,17 @@ LOGS_ROOT = BASE_DIR / "logs"
 PROFILE_CARD_TTL_DAYS = int(os.getenv("PROFILE_CARD_TTL_DAYS", "7"))
 PROFILE_IMAGE_URL_TEMPLATE = (os.getenv("PROFILE_IMAGE_URL_TEMPLATE") or "").strip()
 _PROFILE_IMAGE_ENABLED_ENV = os.getenv("PROFILE_IMAGE_ENABLED")
+PROFILE_VISION_ENABLED = (os.getenv("PROFILE_VISION_ENABLED") or "0").strip() == "1"
+PROFILE_VISION_MODEL = (os.getenv("PROFILE_VISION_MODEL") or "gpt-4.1-mini").strip()
+PROFILE_VISION_MAX_TOKENS = int(os.getenv("PROFILE_VISION_MAX_TOKENS", "350"))
 if _PROFILE_IMAGE_ENABLED_ENV is None:
     PROFILE_IMAGE_ENABLED = bool(PROFILE_IMAGE_URL_TEMPLATE)
 else:
     PROFILE_IMAGE_ENABLED = _PROFILE_IMAGE_ENABLED_ENV.strip() == "1"
+
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+OPENAI_API_BASE = (os.getenv("OPENAI_API_BASE") or "https://api.openai.com").strip()
+OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 STOPWORDS = {
     "about",
@@ -208,19 +218,25 @@ def build_profile_url(avatar_uuid: str, username: str = "") -> str:
 def fetch_profile_html(avatar_uuid: str, url: str) -> str | None:
     log_line(f"web_profile_start avatar={avatar_uuid} url={url}")
     request = Request(url, headers={"User-Agent": "SLQuestProfileEnricher/1.0"})
-    try:
-        start_time = time.perf_counter()
-        with urlopen(request, timeout=4.0) as response:
-            html = response.read().decode("utf-8", errors="ignore")
-            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-            status_code = getattr(response, "status", "unknown")
-            log_line(
-                f"web_profile_ok avatar={avatar_uuid} status={status_code} elapsed_ms={elapsed_ms}"
-            )
-            return html
-    except (URLError, HTTPError, TimeoutError) as exc:
-        log_line(f"web_profile_fetch_failed avatar={avatar_uuid} error={exc}")
-        return None
+    for attempt in range(2):
+        try:
+            start_time = time.perf_counter()
+            with urlopen(request, timeout=4.0) as response:
+                html = response.read().decode("utf-8", errors="ignore")
+                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                status_code = getattr(response, "status", "unknown")
+                log_line(
+                    f"web_profile_ok avatar={avatar_uuid} status={status_code} elapsed_ms={elapsed_ms}"
+                )
+                return html
+        except (URLError, HTTPError, TimeoutError) as exc:
+            if attempt == 0:
+                log_line(
+                    f"web_profile_retry avatar={avatar_uuid} error={type(exc).__name__}:{exc}"
+                )
+                continue
+            log_line(f"web_profile_fetch_failed avatar={avatar_uuid} error={exc}")
+            return None
 
 
 def strip_html_tags(value: str) -> str:
@@ -286,7 +302,7 @@ def html_unescape(value: str) -> str:
 
 def download_profile_image(
     image_uuid: str | None, username: str
-) -> tuple[bytes | None, str | None]:
+) -> tuple[bytes | None, str | None, str | None]:
     log_line(
         "profile_image_download_start "
         f"image_uuid={image_uuid or 'none'} username={username or 'none'} "
@@ -294,41 +310,162 @@ def download_profile_image(
     )
     if not PROFILE_IMAGE_URL_TEMPLATE:
         log_line(f"profile_image_skipped image_uuid={image_uuid} reason=no_template")
-        return None, None
+        return None, None, None
     if "{image_uuid}" in PROFILE_IMAGE_URL_TEMPLATE and not image_uuid:
         log_line("profile_image_skipped reason=missing_image_uuid")
-        return None, None
+        return None, None, None
     if "{username}" in PROFILE_IMAGE_URL_TEMPLATE and not username:
         log_line("profile_image_skipped reason=missing_username")
-        return None, None
+        return None, None, None
     url = PROFILE_IMAGE_URL_TEMPLATE.format(image_uuid=image_uuid or "", username=username)
     log_line(f"profile_image_request image_uuid={image_uuid} url={url}")
     request = Request(url, headers={"User-Agent": "SLQuestProfileEnricher/1.0"})
-    try:
-        start_time = time.perf_counter()
-        with urlopen(request, timeout=5.0) as response:
-            payload = response.read()
-            content_type = response.headers.get("Content-Type", "")
-            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-            status_code = getattr(response, "status", "unknown")
+    for attempt in range(2):
+        try:
+            start_time = time.perf_counter()
+            with urlopen(request, timeout=5.0) as response:
+                payload = response.read()
+                content_type = response.headers.get("Content-Type", "")
+                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                status_code = getattr(response, "status", "unknown")
+                log_line(
+                    "profile_image_ok "
+                    f"image_uuid={image_uuid} status={status_code} bytes={len(payload)} "
+                    f"elapsed_ms={elapsed_ms} content_type={content_type or 'unknown'}"
+                )
+                return payload, content_type, url
+        except HTTPError as exc:
+            if attempt == 0 and exc.code >= 500:
+                log_line(
+                    "profile_image_retry "
+                    f"image_uuid={image_uuid} status={exc.code} reason={exc.reason}"
+                )
+                continue
             log_line(
-                "profile_image_ok "
-                f"image_uuid={image_uuid} status={status_code} bytes={len(payload)} "
-                f"elapsed_ms={elapsed_ms} content_type={content_type or 'unknown'}"
+                "profile_image_download_failed "
+                f"image_uuid={image_uuid} status={exc.code} reason={exc.reason}"
             )
-            return payload, content_type
-    except HTTPError as exc:
-        log_line(
-            "profile_image_download_failed "
-            f"image_uuid={image_uuid} status={exc.code} reason={exc.reason}"
-        )
-        return None, None
-    except (URLError, TimeoutError) as exc:
-        log_line(
-            "profile_image_download_failed "
-            f"image_uuid={image_uuid} error={type(exc).__name__}:{exc}"
-        )
-        return None, None
+            return None, None, url
+        except (URLError, TimeoutError) as exc:
+            if attempt == 0:
+                log_line(
+                    "profile_image_retry "
+                    f"image_uuid={image_uuid} error={type(exc).__name__}:{exc}"
+                )
+                continue
+            log_line(
+                "profile_image_download_failed "
+                f"image_uuid={image_uuid} error={type(exc).__name__}:{exc}"
+            )
+            return None, None, url
+
+
+def summarize_about_text(about_text: str, limit: int = 240) -> str:
+    cleaned = re.sub(r"\s+", " ", about_text or "").strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) <= limit:
+        return cleaned
+    truncated = cleaned[:limit].rstrip()
+    return truncated + "…"
+
+
+def build_profile_image_url(image_uuid: str | None, username: str) -> str | None:
+    if not PROFILE_IMAGE_URL_TEMPLATE:
+        return None
+    if "{image_uuid}" in PROFILE_IMAGE_URL_TEMPLATE and not image_uuid:
+        return None
+    if "{username}" in PROFILE_IMAGE_URL_TEMPLATE and not username:
+        return None
+    return PROFILE_IMAGE_URL_TEMPLATE.format(
+        image_uuid=image_uuid or "", username=username
+    )
+
+
+def build_image_input_payload(
+    image_url: str | None, image_bytes: bytes | None, content_type: str | None
+) -> dict[str, Any] | None:
+    if image_url:
+        return {"type": "input_image", "image_url": image_url}
+    if image_bytes:
+        mime_type = content_type or "image/png"
+        encoded = base64.b64encode(image_bytes).decode("utf-8")
+        return {"type": "input_image", "image_url": f"data:{mime_type};base64,{encoded}"}
+    return None
+
+
+def analyze_profile_image(
+    avatar_uuid: str,
+    image_url: str | None,
+    image_bytes: bytes | None,
+    content_type: str | None,
+) -> dict[str, Any] | None:
+    if not PROFILE_VISION_ENABLED:
+        return None
+    if not OPENAI_CLIENT:
+        log_line(f"profile_vision_disabled avatar={avatar_uuid} reason=missing_api_key")
+        return None
+    image_payload = build_image_input_payload(image_url, None, None)
+    fallback_payload = build_image_input_payload(None, image_bytes, content_type)
+    if not image_payload and not fallback_payload:
+        log_line(f"profile_vision_skipped avatar={avatar_uuid} reason=no_image")
+        return None
+    prompt = (
+        "You are analyzing a Second Life avatar profile picture. "
+        "Return STRICT JSON matching this schema:\n"
+        "{\n"
+        '  "source_url": "...",\n'
+        '  "summary": "one paragraph safe description of avatar styling",\n'
+        '  "style_tags": ["..."],\n'
+        '  "hair": {"color":"", "length":"", "style":""},\n'
+        '  "eyes": {"color":"", "notes":""},\n'
+        '  "accessories": ["..."],\n'
+        '  "clothing_summary": "",\n'
+        '  "nonhuman_traits": ["..."],\n'
+        '  "vibe_keywords": ["..."],\n'
+        '  "safe_hooks": ["..."],\n'
+        '  "avoid_assumptions": ["no gender/sex identity", "no age", "no ethnicity", "no real identity"],\n'
+        '  "confidence": {"hair_color":0.0,"eye_color":0.0,"style_tags":0.0,"accessories":0.0}\n'
+        "}\n"
+        "Rules: Do not infer sensitive traits (gender/sex identity, age, ethnicity, nationality, "
+        "real identity). Focus only on safe avatar styling: hair/eyes/style/accessories, "
+        "species cues, outfit, colors, vibe keywords, and safe conversation hooks."
+    )
+    for attempt in range(2):
+        try:
+            response = OPENAI_CLIENT.responses.create(
+                model=PROFILE_VISION_MODEL,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            image_payload or fallback_payload,
+                        ],
+                    }
+                ],
+                max_output_tokens=PROFILE_VISION_MAX_TOKENS,
+            )
+            raw_text = (response.output_text or "").strip()
+            if not raw_text:
+                log_line(f"profile_vision_empty avatar={avatar_uuid}")
+                return None
+            parsed = json.loads(raw_text)
+            if not isinstance(parsed, dict):
+                log_line(f"profile_vision_invalid avatar={avatar_uuid} reason=non_dict")
+                return None
+            parsed.setdefault("source_url", image_url or "")
+            return parsed
+        except Exception as exc:
+            if attempt == 0:
+                if image_payload and fallback_payload:
+                    log_line(
+                        f"profile_vision_retry avatar={avatar_uuid} error={type(exc).__name__}:{exc}"
+                    )
+                    image_payload = None
+                    continue
+            log_line(f"profile_vision_failed avatar={avatar_uuid} error={exc}")
+            return None
 
 
 def vibe_tags_from_image_bytes(image_bytes: bytes | None) -> list[str]:
@@ -339,15 +476,21 @@ def vibe_tags_from_image_bytes(image_bytes: bytes | None) -> list[str]:
     return []
 
 
-def build_safe_personalization(keywords: list[str], vibe_tags: list[str]) -> dict[str, Any]:
+def build_safe_personalization(
+    keywords: list[str],
+    vibe_tags: list[str],
+    safe_hooks: list[str] | None = None,
+) -> dict[str, Any]:
     topics = []
     if keywords:
         topics.extend(keywords[:3])
     if vibe_tags:
         topics.extend(vibe_tags[:2])
+    hooks = [item for item in (safe_hooks or []) if item][:4]
     return {
         "greeting_style": "friendly-short",
         "topics_to_offer": topics,
+        "safe_hooks": hooks,
         "tone_avoid": [
             "real-life identity",
             "appearance judgments",
@@ -387,7 +530,8 @@ def build_profile_card(
     interests_text = ""
     if isinstance(web_profile, dict):
         about_text = str(web_profile.get("description") or "")
-    keywords = extract_keywords(about_text, interests_text)
+    about_summary = summarize_about_text(about_text)
+    keywords = extract_keywords(about_text, about_summary, interests_text)
     log_line(
         f"keyword_extract avatar={avatar_uuid} about_len={len(about_text)} interests_len={len(interests_text)} keywords={len(keywords)}"
     )
@@ -395,7 +539,20 @@ def build_profile_card(
     image_uuid = None
     image_analyzed = False
     image_vibe_tags: list[str] = []
+    visual_profile: dict[str, Any] | None = None
+    image_bytes: bytes | None = None
+    content_type: str | None = None
+    image_url: str | None = None
     web_profile_used = bool(web_profile)
+    if isinstance(web_profile, dict):
+        value = web_profile.get("image_uuid")
+        if isinstance(value, str) and value.strip():
+            image_uuid = value.strip()
+        else:
+            log_line(f"profile_image_no_uuid avatar={avatar_uuid}")
+    else:
+        log_line(f"profile_image_no_profile avatar={avatar_uuid}")
+
     if PROFILE_IMAGE_ENABLED:
         template_uses_username = "{username}" in PROFILE_IMAGE_URL_TEMPLATE
         log_line(
@@ -406,20 +563,14 @@ def build_profile_card(
         log_line(
             f"profile_image_flow avatar={avatar_uuid} template_uses_username={int(template_uses_username)}"
         )
-        if isinstance(web_profile, dict):
-            value = web_profile.get("image_uuid")
-            if isinstance(value, str) and value.strip():
-                image_uuid = value.strip()
-            else:
-                log_line(f"profile_image_no_uuid avatar={avatar_uuid}")
-        else:
-            log_line(f"profile_image_no_profile avatar={avatar_uuid}")
         log_line(
             "profile_image_identity "
             f"avatar={avatar_uuid} image_uuid={image_uuid or 'none'} username={username or 'none'}"
         )
         if image_uuid or template_uses_username:
-            image_bytes, content_type = download_profile_image(image_uuid, username=username)
+            image_bytes, content_type, image_url = download_profile_image(
+                image_uuid, username=username
+            )
             image_vibe_tags = vibe_tags_from_image_bytes(image_bytes)
             image_analyzed = bool(image_bytes)
             log_line(
@@ -446,13 +597,53 @@ def build_profile_card(
             f"env_flag={_PROFILE_IMAGE_ENABLED_ENV or 'unset'}"
         )
 
+    if not image_url:
+        image_url = build_profile_image_url(image_uuid, username)
+
+    if PROFILE_VISION_ENABLED and image_url:
+        visual_profile = analyze_profile_image(
+            avatar_uuid,
+            image_url=image_url,
+            image_bytes=image_bytes if image_analyzed else None,
+            content_type=content_type,
+        )
+        if visual_profile:
+            style_tags = visual_profile.get("style_tags") or []
+            vibe_keywords = visual_profile.get("vibe_keywords") or []
+            image_vibe_tags = [
+                str(item)
+                for item in (style_tags + vibe_keywords)
+                if isinstance(item, str) and item
+            ][:8]
+            log_line(
+                f"profile_vision_ok avatar={avatar_uuid} style_tags={len(style_tags)}"
+            )
+
+    safe_hooks = []
+    if visual_profile:
+        hooks = visual_profile.get("safe_hooks")
+        if isinstance(hooks, list):
+            safe_hooks = [str(item) for item in hooks if item][:4]
+
     card = {
         "avatar_uuid": avatar_uuid,
         "display_name": display_name or "Unknown",
         "username": username or "Unknown",
         "profile_keywords": keywords,
         "image_vibe_tags": image_vibe_tags,
-        "safe_personalization": build_safe_personalization(keywords, image_vibe_tags),
+        "safe_personalization": build_safe_personalization(
+            keywords, image_vibe_tags, safe_hooks
+        ),
+        "bio": {
+            "about_full": about_text,
+            "about_summary": about_summary,
+        },
+        "visual_profile": visual_profile or {},
+        "visual_profile_updated_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        if visual_profile
+        else None,
         "source_notes": {
             "web_profiledata": bool(web_profile),
             "lsl_avatar_name_used": bool(avatar_name),
