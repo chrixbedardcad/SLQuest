@@ -124,6 +124,10 @@ def profile_detail_path(avatar_uuid: str) -> Path:
     return state_avatar_dir(avatar_uuid) / "profile_detail.txt"
 
 
+def profile_card_text_path(avatar_uuid: str) -> Path:
+    return state_avatar_dir(avatar_uuid) / "profile_card.txt"
+
+
 def profile_image_path(avatar_uuid: str, extension: str) -> Path:
     safe_extension = extension.lstrip(".") or "bin"
     return state_avatar_dir(avatar_uuid) / f"profile_image.{safe_extension}"
@@ -174,6 +178,12 @@ def save_profile_detail(avatar_uuid: str, detail_text: str) -> None:
     path = profile_detail_path(avatar_uuid)
     ensure_dir(path.parent)
     path.write_text(detail_text, encoding="utf-8")
+
+
+def save_profile_card_text(avatar_uuid: str, card_text: str) -> None:
+    path = profile_card_text_path(avatar_uuid)
+    ensure_dir(path.parent)
+    path.write_text(card_text, encoding="utf-8")
 
 
 def tokenize_keywords(text: str) -> list[str]:
@@ -625,6 +635,12 @@ def build_profile_card(
         if isinstance(hooks, list):
             safe_hooks = [str(item) for item in hooks if item][:4]
 
+    visual_summary = ""
+    if visual_profile:
+        summary_value = visual_profile.get("summary")
+        if isinstance(summary_value, str):
+            visual_summary = summary_value.strip()
+
     card = {
         "avatar_uuid": avatar_uuid,
         "display_name": display_name or "Unknown",
@@ -655,6 +671,20 @@ def build_profile_card(
         },
     }
     log_line(f"enrich_complete avatar={avatar_uuid} keywords={len(keywords)}")
+    card_text_lines = [
+        f"avatar_uuid: {avatar_uuid}",
+        f"username: {username or 'Unknown'}",
+        f"display_name: {display_name or 'Unknown'}",
+        f"profile_url: {web_profile.get('url', '') if isinstance(web_profile, dict) else ''}",
+        f"about_summary: {about_summary}".strip(),
+    ]
+    if visual_summary:
+        card_text_lines.append(f"visual_description: {visual_summary}")
+    if image_vibe_tags:
+        card_text_lines.append(f"image_vibe_tags: {', '.join(image_vibe_tags)}")
+    if safe_hooks:
+        card_text_lines.append(f"safe_hooks: {', '.join(safe_hooks)}")
+    save_profile_card_text(avatar_uuid, "\n".join(card_text_lines).strip() + "\n")
     detail_lines = [
         f"avatar_uuid: {avatar_uuid}",
         f"username: {username or 'Unknown'}",
