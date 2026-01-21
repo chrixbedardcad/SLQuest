@@ -15,12 +15,15 @@ integer GREET_GLOBAL_COOLDOWN_SEC = 20;
 integer GREET_SKIP_OWNER = TRUE;
 integer LM_CB_TOKEN = 9100;
 integer LM_CB_REPLY = 9101;
+integer LM_ACTION = 9200;
+integer FETCH_MAX = 16384;
 
 list gActiveAvatars = [];
 list gSessionEndTimes = [];
 list gQueuedMessages = [];
 list gInFlightAvatars = [];
 list gRequestMap = [];
+list gFetchMap = [];
 integer gListen = -1;
 integer gNextHintTime = 0;
 integer gNextGlobalGreetAt = 0;
@@ -45,6 +48,26 @@ string extractProfileImageKey(string body)
         return "";
     }
     return llGetSubString(body, startIndex, startIndex + endIndex - 1);
+}
+
+list pipeSplit(string s)
+{
+    return llParseString2List(s, ["|"], []);
+}
+
+string pipeGet(list segs, string key)
+{
+    integer i;
+    string prefix = key + "=";
+    for (i = 0; i < llGetListLength(segs); ++i)
+    {
+        string seg = llList2String(segs, i);
+        if (llSubStringIndex(seg, prefix) == 0)
+        {
+            return llUnescapeURL(llGetSubString(seg, llStringLength(prefix), -1));
+        }
+    }
+    return "";
 }
 
 integer nowUnix()
@@ -148,6 +171,7 @@ resetSession()
     gQueuedMessages = [];
     gInFlightAvatars = [];
     gRequestMap = [];
+    gFetchMap = [];
     scheduleNextHint();
     gProfileRequest = NULL_KEY;
     gProfileAvatar = NULL_KEY;
@@ -192,6 +216,47 @@ string getQueuedMessage(key avatar)
 clearQueuedMessage(key avatar)
 {
     setQueuedMessage(avatar, "");
+}
+
+handlePipePackage(string body)
+{
+    list segs = pipeSplit(body);
+    string msgType = pipeGet(segs, "TYPE");
+    if (msgType != "PKG")
+    {
+        return;
+    }
+    key avatar = (key)pipeGet(segs, "USER");
+    string chat = pipeGet(segs, "CHAT");
+    string act = pipeGet(segs, "ACT");
+    if (avatar == NULL_KEY)
+    {
+        return;
+    }
+    integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
+    if (inflightIndex != -1)
+    {
+        gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+    }
+    if (!isActive(avatar))
+    {
+        return;
+    }
+    updateDebugTexture(avatar);
+    if (chat != "")
+    {
+        llRegionSayTo(avatar, 0, chat);
+    }
+    if (act != "")
+    {
+        llMessageLinked(LINK_SET, LM_ACTION, act, avatar);
+    }
+    string queued = getQueuedMessage(avatar);
+    if (queued != "")
+    {
+        clearQueuedMessage(avatar);
+        sendMessage(avatar, queued);
+    }
 }
 
 string buildPayload(key avatar, string message, string clientReqId)
@@ -343,6 +408,35 @@ default
             llSetTexture((key)profileKey, DEBUG_PROFILE_FACE);
             return;
         }
+        integer fetchIndex = llListFindList(gFetchMap, [request_id]);
+        if (fetchIndex != -1)
+        {
+            key avatar = llList2Key(gFetchMap, fetchIndex + 1);
+            gFetchMap = llDeleteSubList(gFetchMap, fetchIndex, fetchIndex + 1);
+            if (status == 200)
+            {
+                handlePipePackage(body);
+            }
+            else
+            {
+                integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
+                if (inflightIndex != -1)
+                {
+                    gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+                }
+                if (isActive(avatar))
+                {
+                    llRegionSayTo(avatar, 0, "Sorry, fetch failed. Try again.");
+                }
+                string queuedFail = getQueuedMessage(avatar);
+                if (queuedFail != "")
+                {
+                    clearQueuedMessage(avatar);
+                    sendMessage(avatar, queuedFail);
+                }
+            }
+            return;
+        }
         integer requestIndex = llListFindList(gRequestMap, [request_id]);
         if (requestIndex == -1)
         {
@@ -451,28 +545,51 @@ default
         {
             return;
         }
-        key avatar = (key)llJsonGetValue(str, ["avatar_key"]);
-        string reply = llJsonGetValue(str, ["reply"]);
-        if (avatar == NULL_KEY || reply == "")
+        if (llGetSubString(str, 0, 0) == "{")
         {
+            key avatar = (key)llJsonGetValue(str, ["avatar_key"]);
+            string reply = llJsonGetValue(str, ["reply"]);
+            if (avatar == NULL_KEY || reply == "")
+            {
+                return;
+            }
+            integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
+            if (inflightIndex != -1)
+            {
+                gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+            }
+            if (!isActive(avatar))
+            {
+                return;
+            }
+            updateDebugTexture(avatar);
+            llRegionSayTo(avatar, 0, reply);
+            string queued = getQueuedMessage(avatar);
+            if (queued != "")
+            {
+                clearQueuedMessage(avatar);
+                sendMessage(avatar, queued);
+            }
             return;
         }
-        integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
-        if (inflightIndex != -1)
+        list segs = pipeSplit(str);
+        string msgType = pipeGet(segs, "TYPE");
+        if (msgType == "FETCH")
         {
-            gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
-        }
-        if (!isActive(avatar))
-        {
+            key avatar = (key)pipeGet(segs, "USER");
+            string token = pipeGet(segs, "TOKEN");
+            if (avatar != NULL_KEY && token != "")
+            {
+                string url = SERVER_BASE + "/sl/fetch?token=" + llEscapeURL(token);
+                key req = llHTTPRequest(url, [HTTP_METHOD, "GET", HTTP_BODY_MAXLENGTH, FETCH_MAX], "");
+                gFetchMap += [req, avatar];
+            }
             return;
         }
-        updateDebugTexture(avatar);
-        llRegionSayTo(avatar, 0, reply);
-        string queued = getQueuedMessage(avatar);
-        if (queued != "")
+        if (msgType == "PKG")
         {
-            clearQueuedMessage(avatar);
-            sendMessage(avatar, queued);
+            handlePipePackage(str);
+            return;
         }
     }
 

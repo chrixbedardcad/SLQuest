@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -19,6 +20,7 @@ from flask import Flask, Response, request, has_request_context
 import openai as openai_pkg
 from openai import OpenAI
 
+import SLQuest_QuestEngine as QuestEngine
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / "SLQuest.env")
@@ -54,8 +56,41 @@ CALLBACKS_LOCK = threading.Lock()
 CALLBACKS: dict[tuple[str, str], dict[str, Any]] = {}
 CALLBACK_TTL_SECONDS = int(os.getenv("CALLBACK_TTL_SECONDS", "7200"))
 CALLBACK_POST_TIMEOUT_SECONDS = float(os.getenv("CALLBACK_POST_TIMEOUT_SECONDS", "2.5"))
+SAFE_CALLBACK_MAX = 1400
+PKG_CACHE_LOCK = threading.Lock()
+PKG_CACHE: dict[str, dict[str, Any]] = {}
+PKG_CACHE_TTL_SECONDS = 90
 
 CLIENT = OpenAI(api_key=OPENAI_API_KEY)
+
+
+def esc(value: str) -> str:
+    return quote(value or "", safe="")
+
+
+def kv(key: str, val: str) -> str:
+    return f"{key}={esc(val)}"
+
+
+def pack(fields: list[tuple[str, str]]) -> str:
+    return "|".join(
+        [f"{key}={esc(val)}" for (key, val) in fields if key and val is not None]
+    )
+
+
+def pack_actions(actions: list[str]) -> str:
+    return ";".join(
+        [action.strip() for action in actions if isinstance(action, str) and action.strip()]
+    )
+
+
+def pack_quest(q: dict[str, Any]) -> str:
+    parts = []
+    for key in ("state", "hint", "reward"):
+        value = q.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(f"{key}={value.strip()}")
+    return ";".join(parts)
 
 
 def ensure_dir(path: Path) -> None:
@@ -307,6 +342,36 @@ def make_callback_token() -> str:
     return uuid4().hex
 
 
+def pkg_cache_put(body: str) -> str:
+    token = uuid4().hex
+    with PKG_CACHE_LOCK:
+        PKG_CACHE[token] = {
+            "body": body,
+            "expires_at": now_utc_ts() + PKG_CACHE_TTL_SECONDS,
+        }
+    return token
+
+
+def pkg_cache_get(token: str) -> str | None:
+    now = now_utc_ts()
+    with PKG_CACHE_LOCK:
+        entry = PKG_CACHE.get(token)
+        if not entry:
+            return None
+        if entry.get("expires_at", 0) < now:
+            PKG_CACHE.pop(token, None)
+            return None
+        return entry.get("body")
+
+
+def pkg_cache_prune() -> None:
+    now = now_utc_ts()
+    with PKG_CACHE_LOCK:
+        stale = [key for key, value in PKG_CACHE.items() if value.get("expires_at", 0) < now]
+        for key in stale:
+            PKG_CACHE.pop(key, None)
+
+
 def set_callback(object_key: str, npc_id: str, url: str, token: str, region: str) -> None:
     with CALLBACKS_LOCK:
         CALLBACKS[(object_key, npc_id)] = {
@@ -324,11 +389,13 @@ def get_callback(object_key: str, npc_id: str) -> dict[str, Any] | None:
         return dict(entry) if entry else None
 
 
-def post_callback(url: str, payload: dict[str, Any]) -> tuple[bool, str]:
+def post_callback(callback_url: str, token: str, body_text: str) -> tuple[bool, str]:
+    sep = "&" if "?" in callback_url else "?"
+    url = f"{callback_url}{sep}t={token}"
     request_obj = Request(
         url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        data=body_text.encode("utf-8"),
+        headers={"Content-Type": "text/plain; charset=utf-8"},
         method="POST",
     )
     try:
@@ -1751,6 +1818,17 @@ def sl_callback_register() -> tuple[Response, int]:
     return json_response(response_payload, 200)
 
 
+@app.get("/sl/fetch")
+def sl_fetch() -> Response:
+    token = (request.args.get("token") or "").strip()
+    if not token:
+        return Response("missing_token", status=400, mimetype="text/plain")
+    body = pkg_cache_get(token)
+    if not body:
+        return Response("not_found", status=404, mimetype="text/plain")
+    return Response(body, status=200, mimetype="text/plain")
+
+
 @app.post("/chat_async")
 def chat_async() -> tuple[Response, int]:
     start_time = time.perf_counter()
@@ -1886,26 +1964,78 @@ def chat_async() -> tuple[Response, int]:
         payload, _status = run_chat_logic(
             "/chat_async", callback_request_id, worker_data, raw_body=""
         )
-        callback_payload = {
-            "ok": payload.get("ok", False),
-            "reply": payload.get("reply", ""),
-            "error": payload.get("error", ""),
-            "reply_chars": payload.get("reply_chars", len(payload.get("reply", ""))),
-            "avatar_key": worker_data.get("avatar_key", ""),
-            "npc_id": worker_data.get("npc_id", ""),
-            "client_req_id": worker_data.get("client_req_id", ""),
-            "callback_token": callback_token,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        }
-        success, error = post_callback(callback_url, callback_payload)
+        pkg_cache_prune()
+        quest_out: dict[str, Any] = {}
+        session_id = thread_key(
+            worker_data.get("avatar_key", ""), worker_data.get("npc_id", "")
+        )
+        try:
+            quest_out = QuestEngine.handle_message(
+                session_id, worker_data.get("message", "")
+            )
+        except Exception as exc:
+            log_error(f"quest_engine_failed session_id={session_id} error={exc}")
+
+        chat_text = ""
+        if isinstance(quest_out, dict) and isinstance(quest_out.get("reply"), str):
+            chat_text = quest_out["reply"].strip()
+        if not chat_text:
+            chat_text = (payload.get("reply") or "").strip()
+
+        actions: list[str] = []
+        if isinstance(quest_out, dict) and isinstance(quest_out.get("actions"), list):
+            actions.extend(
+                [action for action in quest_out["actions"] if isinstance(action, str)]
+            )
+
+        qpack = ""
+        if isinstance(quest_out, dict) and isinstance(quest_out.get("quest"), dict):
+            qpack = pack_quest(quest_out["quest"])
+
+        ok = bool(payload.get("ok", False))
+        err = (payload.get("error") or "").strip()
+        act_str = pack_actions(actions)
+        pkg_body = pack(
+            [
+                ("V", "1"),
+                ("TYPE", "PKG"),
+                ("RID", worker_data.get("client_req_id", "")),
+                ("USER", worker_data.get("avatar_key", "")),
+                ("NPC", worker_data.get("npc_id", "")),
+                ("OK", "1" if ok else "0"),
+                ("CHAT", chat_text),
+                ("ACT", act_str),
+                ("Q", qpack),
+                ("ERR", err),
+            ]
+        )
+
+        if len(pkg_body) <= SAFE_CALLBACK_MAX:
+            cb_body = pkg_body
+        else:
+            fetch_token = pkg_cache_put(pkg_body)
+            cb_body = pack(
+                [
+                    ("V", "1"),
+                    ("TYPE", "FETCH"),
+                    ("RID", worker_data.get("client_req_id", "")),
+                    ("USER", worker_data.get("avatar_key", "")),
+                    ("NPC", worker_data.get("npc_id", "")),
+                    ("OK", "1" if ok else "0"),
+                    ("TOKEN", fetch_token),
+                    ("ERR", err),
+                ]
+            )
+
+        success, error = post_callback(callback_url, callback_token, cb_body)
         if success:
             log_line(
                 RUN_LOG_PATH,
-                f"callback_post_ok request_id={callback_request_id} avatar={callback_payload['avatar_key']} npc_id={callback_payload['npc_id']}",
+                f"callback_post_ok request_id={callback_request_id} avatar={worker_data.get('avatar_key','')} npc_id={worker_data.get('npc_id','')}",
             )
         else:
             log_error(
-                f"callback_post_failed request_id={callback_request_id} avatar={callback_payload['avatar_key']} npc_id={callback_payload['npc_id']} error={error}"
+                f"callback_post_failed request_id={callback_request_id} avatar={worker_data.get('avatar_key','')} npc_id={worker_data.get('npc_id','')} error={error}"
             )
 
     threading.Thread(target=worker, daemon=True).start()

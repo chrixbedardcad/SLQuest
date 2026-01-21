@@ -7,6 +7,26 @@ string gCallbackURL = "";
 string gCallbackToken = "";
 key gRegisterReq = NULL_KEY;
 
+string getQueryParam(string qs, string key)
+{
+    list parts = llParseString2List(qs, ["&"], []);
+    integer i;
+    for (i = 0; i < llGetListLength(parts); ++i)
+    {
+        string part = llList2String(parts, i);
+        integer eq = llSubStringIndex(part, "=");
+        if (eq > 0)
+        {
+            string k = llGetSubString(part, 0, eq - 1);
+            if (k == key)
+            {
+                return llUnescapeURL(llGetSubString(part, eq + 1, -1));
+            }
+        }
+    }
+    return "";
+}
+
 registerCallback()
 {
     string payload = llList2Json(JSON_OBJECT, [
@@ -54,10 +74,19 @@ default
         {
             return;
         }
-        string token = llJsonGetValue(body, ["callback_token"]);
-        if (token != gCallbackToken)
+        string qs = llGetHTTPHeader(id, "x-query-string");
+        string tokenQ = getQueryParam(qs, "t");
+        if (tokenQ != "" && tokenQ != gCallbackToken)
         {
             return;
+        }
+        if (tokenQ == "")
+        {
+            string token = llJsonGetValue(body, ["callback_token"]);
+            if (token != gCallbackToken)
+            {
+                return;
+            }
         }
         llMessageLinked(LINK_SET, LM_CB_REPLY, body, NULL_KEY);
     }
