@@ -6,7 +6,7 @@ _QUEST_STATE: Dict[str, str] = {}
 
 
 def handle_message(session_id: str, message: str) -> dict:
-    """Handle a quest message and return reply + quest state."""
+    """Handle a quest message and return reply + quest state + actions."""
     normalized = message.lower()
     state = _QUEST_STATE.get(session_id, "idle")
 
@@ -19,6 +19,7 @@ def handle_message(session_id: str, message: str) -> dict:
                 "state": state,
                 "hint": "Say the color of a clear daytime sky.",
             },
+            "actions": ["Sound:click01,vol=1.0"],
         }
 
     if state == "intro" and "blue" in normalized:
@@ -30,6 +31,7 @@ def handle_message(session_id: str, message: str) -> dict:
                 "state": state,
                 "reward": "You earned: Blue Feather",
             },
+            "actions": ["Sound:success,vol=1.0", "Give:Blue Feather"],
         }
 
     if state == "intro":
@@ -39,6 +41,7 @@ def handle_message(session_id: str, message: str) -> dict:
                 "state": state,
                 "hint": "It rhymes with 'glue'.",
             },
+            "actions": [],
         }
 
     return {
@@ -47,4 +50,5 @@ def handle_message(session_id: str, message: str) -> dict:
             "state": state,
             "hint": "Touch the object or say 'start'.",
         },
+        "actions": [],
     }
