@@ -7,7 +7,7 @@ string gCallbackURL = "";
 string gCallbackToken = "";
 key gRegisterReq = NULL_KEY;
 
-string getQueryParam(string qs, string key)
+string getQueryParam(string qs, string ikey)
 {
     list parts = llParseString2List(qs, ["&"], []);
     integer i;
@@ -18,7 +18,7 @@ string getQueryParam(string qs, string key)
         if (eq > 0)
         {
             string k = llGetSubString(part, 0, eq - 1);
-            if (k == key)
+            if (k == ikey)
             {
                 return llUnescapeURL(llGetSubString(part, eq + 1, -1));
             }
