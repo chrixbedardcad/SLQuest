@@ -5,7 +5,7 @@
 
 string SERVER_URL = "http://YOUR_HOST:PORT";
 string ADMIN_TOKEN = "PUT_TOKEN_HERE";
-string NPC_ID = "calder_mob";
+string NPC_ID = "";
 string DISPLAY_NAME = "Calder Mob";
 string MODEL = "gpt-5.2";
 integer MAX_HISTORY_EVENTS = 12;
@@ -16,12 +16,21 @@ integer gLineIndex = 0;
 string gNotecardText = "";
 key gNotecardKey = NULL_KEY;
 
+string getNpcId()
+{
+    if (NPC_ID != "")
+    {
+        return NPC_ID;
+    }
+    return llGetObjectName();
+}
+
 string buildPayload()
 {
     string region = llGetRegionName();
     return llList2Json(JSON_OBJECT, [
         "admin_token", ADMIN_TOKEN,
-        "npc_id", NPC_ID,
+        "npc_id", getNpcId(),
         "display_name", DISPLAY_NAME,
         "model", MODEL,
         "max_history_events", MAX_HISTORY_EVENTS,

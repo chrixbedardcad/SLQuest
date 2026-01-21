@@ -1,5 +1,5 @@
 string SERVER_BASE = "http://slquest.duckdns.org:8001";
-string NPC_ID = "SLQuest_DefaultNPC";
+string NPC_ID = "";
 string PROFILE_PAGE_BASE = "https://world.secondlife.com/resident/";
 // NOTE: Place SLQuest_CallbackReceiver.lsl in the same linkset so callbacks can be routed.
 integer SESSION_TIMEOUT_SEC = 90;
@@ -32,6 +32,15 @@ key gProfileRequest = NULL_KEY;
 key gProfileAvatar = NULL_KEY;
 integer gProfileClearAt = 0;
 string gCallbackToken = "";
+
+string getNpcId()
+{
+    if (NPC_ID != "")
+    {
+        return NPC_ID;
+    }
+    return llGetObjectName();
+}
 
 string extractProfileImageKey(string body)
 {
@@ -262,7 +271,7 @@ handlePipePackage(string body)
 string buildPayload(key avatar, string message, string clientReqId)
 {
     return llList2Json(JSON_OBJECT, [
-        "npc_id", NPC_ID,
+        "npc_id", getNpcId(),
         "avatar_key", (string)avatar,
         "avatar_name", llGetUsername(avatar),
         "avatar_display_name", llGetDisplayName(avatar),
