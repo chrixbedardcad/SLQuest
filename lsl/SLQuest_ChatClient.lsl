@@ -39,6 +39,32 @@ key getRootKey()
     return llGetLinkKey(LINK_ROOT);
 }
 
+string getConfigValue(string key, string fallback)
+{
+    string desc = llGetObjectDesc();
+    if (desc == "")
+    {
+        return fallback;
+    }
+    list parts = llParseString2List(desc, [" ", "\n", "\t", "|", ";"], []);
+    integer i;
+    string prefix = key + "=";
+    for (i = 0; i < llGetListLength(parts); ++i)
+    {
+        string part = llList2String(parts, i);
+        if (llSubStringIndex(part, prefix) == 0)
+        {
+            return llGetSubString(part, llStringLength(prefix), -1);
+        }
+    }
+    return fallback;
+}
+
+string getServerBase()
+{
+    return getConfigValue("SERVER_BASE", SERVER_BASE);
+}
+
 string getNpcId()
 {
     if (NPC_ID != "")
@@ -297,11 +323,11 @@ sendMessage(key avatar, string message)
 {
     string clientReqId = (string)llGenerateKey();
     string payload = buildPayload(avatar, message, clientReqId);
-    string url = SERVER_BASE + "/chat";
+    string url = getServerBase() + "/chat";
     integer isAsync = FALSE;
     if (gCallbackToken != "")
     {
-        url = SERVER_BASE + "/chat_async";
+        url = getServerBase() + "/chat_async";
         isAsync = TRUE;
     }
     gInFlightAvatars += [avatar];
@@ -600,7 +626,7 @@ default
             string token = pipeGet(segs, "TOKEN");
             if (avatar != NULL_KEY && token != "")
             {
-                string url = SERVER_BASE + "/sl/fetch?token=" + llEscapeURL(token);
+                string url = getServerBase() + "/sl/fetch?token=" + llEscapeURL(token);
                 key req = llHTTPRequest(url, [HTTP_METHOD, "GET", HTTP_BODY_MAXLENGTH, FETCH_MAX], "");
                 gFetchMap += [req, avatar];
             }

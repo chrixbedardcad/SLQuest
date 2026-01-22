@@ -48,6 +48,10 @@ python enrich/profile_enricher_server.py
 3. Drop the script into an in-world object.
 4. Touch the object to start a chat session, then talk in public chat near it.
 
+Tip: You can override `SERVER_BASE` or `SERVER_URL` for all scripts in a linkset by placing
+`SERVER_BASE=http://your-host:port` (or `SERVER_URL=http://your-host:port`) in the object's
+description so you don't have to edit every script.
+
 ## Curl tests
 
 ```bash

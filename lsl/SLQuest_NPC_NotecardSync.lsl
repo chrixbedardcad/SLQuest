@@ -16,6 +16,32 @@ integer gLineIndex = 0;
 string gNotecardText = "";
 key gNotecardKey = NULL_KEY;
 
+string getConfigValue(string key, string fallback)
+{
+    string desc = llGetObjectDesc();
+    if (desc == "")
+    {
+        return fallback;
+    }
+    list parts = llParseString2List(desc, [" ", "\n", "\t", "|", ";"], []);
+    integer i;
+    string prefix = key + "=";
+    for (i = 0; i < llGetListLength(parts); ++i)
+    {
+        string part = llList2String(parts, i);
+        if (llSubStringIndex(part, prefix) == 0)
+        {
+            return llGetSubString(part, llStringLength(prefix), -1);
+        }
+    }
+    return fallback;
+}
+
+string getServerUrl()
+{
+    return getConfigValue("SERVER_URL", SERVER_URL);
+}
+
 key getRootKey()
 {
     return llGetLinkKey(LINK_ROOT);
@@ -56,7 +82,7 @@ sendUpdate()
         HTTP_MIMETYPE, "application/json;charset=utf-8",
         HTTP_BODY_MAXLENGTH, 4096
     ];
-    llHTTPRequest(SERVER_URL + "/admin/npc/upsert", headers, payload);
+    llHTTPRequest(getServerUrl() + "/admin/npc/upsert", headers, payload);
 }
 
 startNotecardRead()

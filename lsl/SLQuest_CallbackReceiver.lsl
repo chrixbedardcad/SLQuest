@@ -8,6 +8,32 @@ string gCallbackToken = "";
 key gRegisterReq = NULL_KEY;
 integer LM_CB_REFRESH = 9102;
 
+string getConfigValue(string key, string fallback)
+{
+    string desc = llGetObjectDesc();
+    if (desc == "")
+    {
+        return fallback;
+    }
+    list parts = llParseString2List(desc, [" ", "\n", "\t", "|", ";"], []);
+    integer i;
+    string prefix = key + "=";
+    for (i = 0; i < llGetListLength(parts); ++i)
+    {
+        string part = llList2String(parts, i);
+        if (llSubStringIndex(part, prefix) == 0)
+        {
+            return llGetSubString(part, llStringLength(prefix), -1);
+        }
+    }
+    return fallback;
+}
+
+string getServerBase()
+{
+    return getConfigValue("SERVER_BASE", SERVER_BASE);
+}
+
 key getRootKey()
 {
     return llGetLinkKey(LINK_ROOT);
@@ -52,7 +78,7 @@ registerCallback()
         "ts", llGetTimestamp()
     ]);
     gRegisterReq = llHTTPRequest(
-        SERVER_BASE + "/sl/callback/register",
+        getServerBase() + "/sl/callback/register",
         [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"],
         payload
     );
