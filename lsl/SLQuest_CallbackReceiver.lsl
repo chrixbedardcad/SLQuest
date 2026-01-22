@@ -1,11 +1,20 @@
 string SERVER_BASE = "http://slquest.duckdns.org:8001";
-string NPC_ID = "SLQuest_DefaultNPC";
+string NPC_ID = "";
 integer LM_CB_TOKEN = 9100;
 integer LM_CB_REPLY = 9101;
 
 string gCallbackURL = "";
 string gCallbackToken = "";
 key gRegisterReq = NULL_KEY;
+
+string getNpcId()
+{
+    if (NPC_ID != "")
+    {
+        return NPC_ID;
+    }
+    return llGetObjectName();
+}
 
 string getQueryParam(string qs, string ikey)
 {
@@ -31,7 +40,7 @@ registerCallback()
 {
     string payload = llList2Json(JSON_OBJECT, [
         "object_key", (string)llGetKey(),
-        "npc_id", NPC_ID,
+        "npc_id", getNpcId(),
         "region", llGetRegionName(),
         "callback_url", gCallbackURL,
         "ts", llGetTimestamp()
