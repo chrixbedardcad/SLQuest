@@ -55,10 +55,10 @@ list pipeSplit(string s)
     return llParseString2List(s, ["|"], []);
 }
 
-string pipeGet(list segs, string key)
+string pipeGet(list segs, string ikey)
 {
     integer i;
-    string prefix = key + "=";
+    string prefix = ikey + "=";
     for (i = 0; i < llGetListLength(segs); ++i)
     {
         string seg = llList2String(segs, i);
