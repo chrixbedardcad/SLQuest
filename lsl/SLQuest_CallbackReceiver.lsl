@@ -6,6 +6,12 @@ integer LM_CB_REPLY = 9101;
 string gCallbackURL = "";
 string gCallbackToken = "";
 key gRegisterReq = NULL_KEY;
+integer LM_CB_REFRESH = 9102;
+
+key getRootKey()
+{
+    return llGetLinkKey(LINK_ROOT);
+}
 
 string getNpcId()
 {
@@ -39,7 +45,7 @@ string getQueryParam(string qs, string ikey)
 registerCallback()
 {
     string payload = llList2Json(JSON_OBJECT, [
-        "object_key", (string)llGetKey(),
+        "object_key", (string)getRootKey(),
         "npc_id", getNpcId(),
         "region", llGetRegionName(),
         "callback_url", gCallbackURL,
@@ -119,6 +125,19 @@ default
         }
         gCallbackToken = token;
         llMessageLinked(LINK_SET, LM_CB_TOKEN, gCallbackToken, NULL_KEY);
+    }
+
+    link_message(integer sender, integer num, string str, key id)
+    {
+        if (num != LM_CB_REFRESH)
+        {
+            return;
+        }
+        if (gCallbackURL == "")
+        {
+            return;
+        }
+        registerCallback();
     }
 
     on_rez(integer start_param)
