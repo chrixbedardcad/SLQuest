@@ -39,7 +39,7 @@ key getRootKey()
     return llGetLinkKey(LINK_ROOT);
 }
 
-string getConfigValue(string key, string fallback)
+string getConfigValue(string variable_key_name, string fallback)
 {
     string desc = llGetObjectDesc();
     if (desc == "")
@@ -48,7 +48,7 @@ string getConfigValue(string key, string fallback)
     }
     list parts = llParseString2List(desc, [" ", "\n", "\t", "|", ";"], []);
     integer i;
-    string prefix = key + "=";
+    string prefix = variable_key_name + "=";
     for (i = 0; i < llGetListLength(parts); ++i)
     {
         string part = llList2String(parts, i);

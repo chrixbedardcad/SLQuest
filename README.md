@@ -52,6 +52,10 @@ Tip: You can override `SERVER_BASE` or `SERVER_URL` for all scripts in a linkset
 `SERVER_BASE=http://your-host:port` (or `SERVER_URL=http://your-host:port`) in the object's
 description so you don't have to edit every script.
 
+## LSL coding guidelines
+
+- Never use `key` as a variable or parameter name in LSL scripts; `key` is a type keyword and is reserved for type declarations.
+
 ## Curl tests
 
 ```bash
