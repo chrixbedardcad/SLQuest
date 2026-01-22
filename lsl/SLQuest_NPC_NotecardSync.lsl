@@ -16,6 +16,11 @@ integer gLineIndex = 0;
 string gNotecardText = "";
 key gNotecardKey = NULL_KEY;
 
+key getRootKey()
+{
+    return llGetLinkKey(LINK_ROOT);
+}
+
 string getNpcId()
 {
     if (NPC_ID != "")
@@ -36,7 +41,7 @@ string buildPayload()
         "max_history_events", MAX_HISTORY_EVENTS,
         "system_prompt", gNotecardText,
         "source", llList2Json(JSON_OBJECT, [
-            "object_key", (string)llGetKey(),
+            "object_key", (string)getRootKey(),
             "owner_key", (string)llGetOwner(),
             "region", region
         ])

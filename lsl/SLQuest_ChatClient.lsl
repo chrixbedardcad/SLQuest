@@ -15,6 +15,7 @@ integer GREET_GLOBAL_COOLDOWN_SEC = 20;
 integer GREET_SKIP_OWNER = TRUE;
 integer LM_CB_TOKEN = 9100;
 integer LM_CB_REPLY = 9101;
+integer LM_CB_REFRESH = 9102;
 integer LM_ACTION = 9200;
 integer FETCH_MAX = 16384;
 
@@ -32,6 +33,11 @@ key gProfileRequest = NULL_KEY;
 key gProfileAvatar = NULL_KEY;
 integer gProfileClearAt = 0;
 string gCallbackToken = "";
+
+key getRootKey()
+{
+    return llGetLinkKey(LINK_ROOT);
+}
 
 string getNpcId()
 {
@@ -276,7 +282,7 @@ string buildPayload(key avatar, string message, string clientReqId)
         "avatar_name", llGetUsername(avatar),
         "avatar_display_name", llGetDisplayName(avatar),
         "avatar_username", llGetUsername(avatar),
-        "object_key", (string)llGetKey(),
+        "object_key", (string)getRootKey(),
         "object_name", llGetObjectName(),
         "region", llGetRegionName(),
         "allow_web_search", ALLOW_WEB_SEARCH,
@@ -482,6 +488,11 @@ default
             string okValue = llJsonGetValue(body, ["ok"]);
             if (status != 200 || okValue != "true")
             {
+                string errorValue = llJsonGetValue(body, ["error"]);
+                if (errorValue == "callback_not_registered" || errorValue == "callback_token_invalid")
+                {
+                    llMessageLinked(LINK_SET, LM_CB_REFRESH, "", NULL_KEY);
+                }
                 integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
                 if (inflightIndex != -1)
                 {
