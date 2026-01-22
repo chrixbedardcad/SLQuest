@@ -7,6 +7,7 @@ string gCallbackURL = "";
 string gCallbackToken = "";
 key gRegisterReq = NULL_KEY;
 integer LM_CB_REFRESH = 9102;
+integer gRequestInFlight = FALSE;
 
 string getConfigValue(string key, string fallback)
 {
@@ -84,24 +85,39 @@ registerCallback()
     );
 }
 
+requestCallbackURL()
+{
+    if (gCallbackURL != "")
+    {
+        llReleaseURL(gCallbackURL);
+    }
+    gCallbackURL = "";
+    gCallbackToken = "";
+    gRegisterReq = NULL_KEY;
+    gRequestInFlight = TRUE;
+    llRequestURL();
+}
+
 default
 {
     state_entry()
     {
         // Must run in the same linkset as SLQuest_ChatClient.lsl.
-        llRequestURL();
+        requestCallbackURL();
     }
 
     http_request(key id, string method, string body)
     {
         if (method == URL_REQUEST_GRANTED)
         {
+            gRequestInFlight = FALSE;
             gCallbackURL = body;
             registerCallback();
             return;
         }
         if (method == URL_REQUEST_DENIED)
         {
+            gRequestInFlight = FALSE;
             llOwnerSay("Callback URL request denied: " + body);
             return;
         }
@@ -159,11 +175,20 @@ default
         {
             return;
         }
-        if (gCallbackURL == "")
+        if (gCallbackURL == "" && !gRequestInFlight)
         {
+            requestCallbackURL();
             return;
         }
         registerCallback();
+    }
+
+    state_exit()
+    {
+        if (gCallbackURL != "")
+        {
+            llReleaseURL(gCallbackURL);
+        }
     }
 
     on_rez(integer start_param)
@@ -175,6 +200,10 @@ default
     {
         if (change & (CHANGED_OWNER | CHANGED_REGION_START))
         {
+            if (gCallbackURL != "")
+            {
+                llReleaseURL(gCallbackURL);
+            }
             llResetScript();
         }
     }
