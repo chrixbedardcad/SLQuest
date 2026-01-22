@@ -15,6 +15,9 @@ key gNotecardQuery;
 integer gLineIndex = 0;
 string gNotecardText = "";
 key gNotecardKey = NULL_KEY;
+integer gLastHttpStatus = 0;
+string gLastHttpBody = "";
+integer gListenHandle = 0;
 
 string getConfigValue(string variable_key_name, string fallback)
 {
@@ -107,7 +110,7 @@ default
     state_entry()
     {
         gNotecardKey = llGetInventoryKey(NOTECARD);
-        startNotecardRead();
+        gListenHandle = llListen(1, "", llGetOwner(), "");
     }
 
     changed(integer change)
@@ -117,7 +120,8 @@ default
             key newKey = llGetInventoryKey(NOTECARD);
             if (newKey != gNotecardKey)
             {
-                llResetScript();
+                gNotecardKey = newKey;
+                llOwnerSay("Notecard changed; type /1 update to sync.");
             }
         }
     }
@@ -126,12 +130,34 @@ default
     {
         if (isOwner(llDetectedKey(0)))
         {
-            llOwnerSay("Manual NPC sync requested.");
-            llResetScript();
+            llOwnerSay("Manual NPC sync: use /1 update to sync.");
         }
         else
         {
             llOwnerSay("Only the owner can resync this NPC.");
+        }
+    }
+
+    listen(integer channel, string name, key id, string message)
+    {
+        if (!isOwner(id))
+        {
+            return;
+        }
+        string trimmed = llStringTrim(message, STRING_TRIM);
+        string lower = llToLower(trimmed);
+        if (lower == "update")
+        {
+            startNotecardRead();
+            return;
+        }
+        if (lower == "status" || lower == "statue")
+        {
+            llOwnerSay("NPC ID: " + getNpcId());
+            llOwnerSay("Notecard: " + NOTECARD);
+            llOwnerSay("Server URL: " + getServerUrl());
+            llOwnerSay("Last HTTP status: " + (string)gLastHttpStatus);
+            llOwnerSay("Last HTTP body: " + gLastHttpBody);
         }
     }
 
@@ -157,6 +183,8 @@ default
 
     http_response(key request_id, integer status, list metadata, string body)
     {
+        gLastHttpStatus = status;
+        gLastHttpBody = body;
         if (status >= 200 && status < 300)
         {
             llOwnerSay("NPC sync success: " + (string)status);
