@@ -3,10 +3,10 @@
 // NOTE: Notecard lines are limited to ~1024 bytes each; wrap long text across multiple lines.
 // NOTE: Do NOT expect large responses in LSL; the server should return short JSON only.
 
-string SERVER_URL = "http://YOUR_HOST:PORT";
-string ADMIN_TOKEN = "PUT_TOKEN_HERE";
+string SERVER_URL = "http://slquest.duckdns.org:8001";
+string ADMIN_TOKEN = "";
 string NPC_ID = "";
-string DISPLAY_NAME = "Calder Mob";
+string DISPLAY_NAME = "";
 string MODEL = "gpt-5.2";
 integer MAX_HISTORY_EVENTS = 12;
 string NOTECARD = "system.md";
