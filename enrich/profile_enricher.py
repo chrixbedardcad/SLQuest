@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 from openai import OpenAI
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-STATE_ROOT = BASE_DIR / "state"
+PROFILES_ROOT = BASE_DIR / "profiles"
 LOGS_ROOT = BASE_DIR / "logs"
 
 PROFILE_CARD_TTL_DAYS = int(os.getenv("PROFILE_CARD_TTL_DAYS", "7"))
@@ -121,29 +121,29 @@ def log_line(message: str) -> None:
         handle.write(f"[{timestamp}] {message}\n")
 
 
-def state_avatar_dir(avatar_uuid: str) -> Path:
-    return STATE_ROOT / avatar_uuid
+def profile_avatar_dir(avatar_uuid: str) -> Path:
+    return PROFILES_ROOT / avatar_uuid
 
 
 def profile_card_path(avatar_uuid: str) -> Path:
-    return state_avatar_dir(avatar_uuid) / "profile_card.json"
+    return profile_avatar_dir(avatar_uuid) / "profile_card.json"
 
 
 def profile_detail_path(avatar_uuid: str) -> Path:
-    return state_avatar_dir(avatar_uuid) / "profile_detail.txt"
+    return profile_avatar_dir(avatar_uuid) / "profile_detail.txt"
 
 
 def profile_image_detail_path(avatar_uuid: str) -> Path:
-    return state_avatar_dir(avatar_uuid) / "profile_image_detail.txt"
+    return profile_avatar_dir(avatar_uuid) / "profile_image_detail.txt"
 
 
 def profile_card_text_path(avatar_uuid: str) -> Path:
-    return state_avatar_dir(avatar_uuid) / "profile_card.txt"
+    return profile_avatar_dir(avatar_uuid) / "profile_card.txt"
 
 
 def profile_image_path(avatar_uuid: str, extension: str) -> Path:
     safe_extension = extension.lstrip(".") or "bin"
-    return state_avatar_dir(avatar_uuid) / f"profile_image.{safe_extension}"
+    return profile_avatar_dir(avatar_uuid) / f"profile_image.{safe_extension}"
 
 
 def parse_last_updated(card: dict[str, Any]) -> datetime | None:
