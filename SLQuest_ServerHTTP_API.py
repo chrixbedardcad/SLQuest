@@ -180,6 +180,28 @@ def log_error(message: str) -> None:
     log_line(ERROR_LOG_PATH, line)
 
 
+def log_startup_status() -> None:
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    log_line(
+        RUN_LOG_PATH,
+        f"[{timestamp}] server_starting port={PORT} openai_model={OPENAI_MODEL} "
+        f"openai_base={OPENAI_API_BASE} web_search_enabled={int(WEB_SEARCH_ENABLED)} "
+        f"profile_enricher_enabled={int(PROFILE_ENRICHER_ENABLED)}",
+    )
+    log_line(
+        RUN_LOG_PATH,
+        f"[{timestamp}] server_paths logs_root={LOGS_ROOT} chat_root={CHAT_ROOT} "
+        f"state_root={STATE_ROOT} npcs_root={NPCS_ROOT}",
+    )
+    log_line(
+        RUN_LOG_PATH,
+        f"[{timestamp}] server_config admin_token_set={int(bool(SLQUEST_ADMIN_TOKEN))} "
+        f"openai_key_set={int(bool(OPENAI_API_KEY))} "
+        f"profile_enricher_url={PROFILE_ENRICHER_URL or '-'} "
+        f"profile_enricher_timeout={PROFILE_ENRICHER_TIMEOUT_SECONDS}",
+    )
+
+
 def redact_secrets(text: str) -> str:
     return re.sub(r"sk-[A-Za-z0-9]+", "sk-***", text)
 
@@ -2067,4 +2089,5 @@ if __name__ == "__main__":
 
     ensure_dir(LOGS_ROOT)
     ensure_dir(CHAT_ROOT)
+    log_startup_status()
     serve(app, host="0.0.0.0", port=PORT)
