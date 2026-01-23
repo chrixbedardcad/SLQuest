@@ -36,7 +36,7 @@ OPENAI_API_BASE = (os.getenv("OPENAI_API_BASE") or "https://api.openai.com").str
 
 LOGS_ROOT = BASE_DIR / "logs"
 CHAT_ROOT = BASE_DIR / "chat"
-STATE_ROOT = BASE_DIR / "state"
+PROFILES_ROOT = BASE_DIR / "profiles"
 NPCS_ROOT = BASE_DIR / "npcs"
 NPC_BASE_DIR = NPCS_ROOT / "_base"
 NPC_BASE_SYSTEM_PATH = NPC_BASE_DIR / "system.md"
@@ -191,7 +191,7 @@ def log_startup_status() -> None:
     log_line(
         RUN_LOG_PATH,
         f"[{timestamp}] server_paths logs_root={LOGS_ROOT} chat_root={CHAT_ROOT} "
-        f"state_root={STATE_ROOT} npcs_root={NPCS_ROOT}",
+        f"profiles_root={PROFILES_ROOT} npcs_root={NPCS_ROOT}",
     )
     log_line(
         RUN_LOG_PATH,
@@ -459,12 +459,12 @@ def thread_metadata_path(avatar_key: str, npc_id: str) -> Path:
     return thread_dir(avatar_key, npc_id) / "thread.json"
 
 
-def state_avatar_dir(avatar_key: str) -> Path:
-    return STATE_ROOT / sanitize_key(avatar_key)
+def profile_avatar_dir(avatar_key: str) -> Path:
+    return PROFILES_ROOT / sanitize_key(avatar_key)
 
 
 def profile_card_path(avatar_key: str) -> Path:
-    return state_avatar_dir(avatar_key) / "profile_card.json"
+    return profile_avatar_dir(avatar_key) / "profile_card.json"
 
 
 def load_profile_card(avatar_key: str) -> dict[str, Any] | None:
