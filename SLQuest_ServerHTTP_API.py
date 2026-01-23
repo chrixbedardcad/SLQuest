@@ -200,6 +200,12 @@ def log_startup_status() -> None:
         f"profile_enricher_url={PROFILE_ENRICHER_URL or '-'} "
         f"profile_enricher_timeout={PROFILE_ENRICHER_TIMEOUT_SECONDS}",
     )
+    log_line(
+        RUN_LOG_PATH,
+        f"[{timestamp}] server_timeouts profile_enricher={PROFILE_ENRICHER_TIMEOUT_SECONDS} "
+        f"conversation_add_item={CONVERSATION_ADD_ITEM_TIMEOUT_SECONDS} "
+        f"callback_post={CALLBACK_POST_TIMEOUT_SECONDS}",
+    )
 
 
 def redact_secrets(text: str) -> str:
@@ -329,6 +335,10 @@ def is_conversation_invalid(exc: Exception) -> bool:
     return any(marker in message for marker in markers)
 
 
+def redact_callback_url(url: str) -> str:
+    return re.sub(r"([?&]t=)[^&]+", r"\1***", url or "")
+
+
 log_line(RUN_LOG_PATH, f"OpenAI SDK version: {openai_pkg.__version__}")
 ensure_dir(NPCS_ROOT)
 
@@ -421,9 +431,16 @@ def post_callback(callback_url: str, token: str, body_text: str) -> tuple[bool, 
         method="POST",
     )
     try:
+        start_time = time.perf_counter()
         with urlopen(request_obj, timeout=CALLBACK_POST_TIMEOUT_SECONDS) as response:
             response.read()
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             status_code = getattr(response, "status", 200)
+            log_line(
+                RUN_LOG_PATH,
+                "callback_post_response "
+                f"url={redact_callback_url(url)} status={status_code} elapsed_ms={elapsed_ms}",
+            )
             if 200 <= int(status_code) < 300:
                 return True, ""
             return False, f"callback_status_{status_code}"
@@ -691,19 +708,24 @@ def add_conversation_developer_item(
         method="POST",
     )
     try:
+        start_time = time.perf_counter()
         with urlopen(request_obj, timeout=CONVERSATION_ADD_ITEM_TIMEOUT_SECONDS) as response:
             response.read()
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             status_code = getattr(response, "status", "unknown")
             log_line(
                 RUN_LOG_PATH,
-                f"conversation_item_added request_id={request_id} conversation={conversation_id} status={status_code}",
+                f"conversation_item_added request_id={request_id} conversation={conversation_id} "
+                f"status={status_code} elapsed_ms={elapsed_ms} timeout={CONVERSATION_ADD_ITEM_TIMEOUT_SECONDS}",
             )
             return True
     except (URLError, HTTPError, TimeoutError) as exc:
         log_error(
-            f"conversation_item_failed request_id={request_id} conversation={conversation_id} error={exc}"
+            f"conversation_item_failed request_id={request_id} conversation={conversation_id} "
+            f"timeout={CONVERSATION_ADD_ITEM_TIMEOUT_SECONDS} error={exc}"
         )
         return False
+
 
 def load_history(avatar_key: str, npc_id: str, last_n: int) -> list[dict[str, Any]]:
     if last_n <= 0:
@@ -1192,6 +1214,11 @@ def run_chat_logic(
                     save_conversation_id(avatar_key, npc_id, conversation_id)
                     save_instructions_hash(avatar_key, npc_id, instructions_hash)
                     conversation_created = True
+                    log_line(
+                        RUN_LOG_PATH,
+                        f"conversation_created request_id={request_id} conversation={conversation_id} "
+                        f"avatar={avatar_key or '-'} npc_id={npc_id or '-'}",
+                    )
             except Exception as exc:
                 conversation_id = None
                 conversation_failure = exc
@@ -1207,6 +1234,11 @@ def run_chat_logic(
             if not conversation_created:
                 update_text = build_personalization_snippet(profile_card)
                 if update_text:
+                    log_line(
+                        RUN_LOG_PATH,
+                        f"personalization_update_attempt request_id={request_id} "
+                        f"conversation={conversation_id} avatar={avatar_key or '-'}",
+                    )
                     added = add_conversation_developer_item(
                         request_id,
                         conversation_id,
@@ -1225,6 +1257,7 @@ def run_chat_logic(
             )
 
         def request_openai(use_thread: bool) -> str:
+            request_started = time.perf_counter()
             if hasattr(CLIENT, "responses"):
                 request_payload: dict[str, Any] = {
                     "model": model,
@@ -1252,7 +1285,18 @@ def run_chat_logic(
                 log_openai_request(
                     request_id, client_req_id, avatar_key, npc_id, request_payload
                 )
+                log_line(
+                    RUN_LOG_PATH,
+                    f"openai_request_start request_id={request_id} mode={'thread' if use_thread else 'stateless'} "
+                    f"conversation={conversation_id or '-'} model={model}",
+                )
                 response = CLIENT.responses.create(**request_payload)
+                elapsed_ms = int((time.perf_counter() - request_started) * 1000)
+                log_line(
+                    RUN_LOG_PATH,
+                    f"openai_request_done request_id={request_id} mode={'thread' if use_thread else 'stateless'} "
+                    f"elapsed_ms={elapsed_ms} output_chars={len(response.output_text or '')}",
+                )
                 if effective_web:
                     sources = extract_web_search_sources(response)
                     log_web_search_sources(request_id, client_req_id, sources)
@@ -1274,18 +1318,35 @@ def run_chat_logic(
                     "messages": [{"role": "system", "content": instructions}] + messages,
                 },
             )
+            log_line(
+                RUN_LOG_PATH,
+                f"openai_request_start request_id={request_id} mode=legacy model={model}",
+            )
             resp = CLIENT.chat.completions.create(
                 model=model,
                 messages=[{"role": "system", "content": instructions}] + messages,
+            )
+            elapsed_ms = int((time.perf_counter() - request_started) * 1000)
+            log_line(
+                RUN_LOG_PATH,
+                f"openai_request_done request_id={request_id} mode=legacy elapsed_ms={elapsed_ms}",
             )
             return (resp.choices[0].message.content or "").strip()
 
         try:
             if conversation_id and not conversation_failure:
                 try:
+                    log_line(
+                        RUN_LOG_PATH,
+                        f"conversation_use request_id={request_id} conversation={conversation_id}",
+                    )
                     reply_text = request_openai(use_thread=True)
                 except Exception as exc:
                     if is_conversation_invalid(exc):
+                        log_error(
+                            f"conversation_invalid request_id={request_id} "
+                            f"conversation={conversation_id} error={exc}"
+                        )
                         delete_conversation_id(avatar_key, npc_id)
                         conversation_id = None
                         try:
@@ -1302,10 +1363,17 @@ def run_chat_logic(
                             )
                             reply_text = request_openai(use_thread=True)
                         except Exception:
+                            log_error(
+                                f"conversation_fallback_stateless request_id={request_id} avatar={avatar_key}"
+                            )
                             reply_text = request_openai(use_thread=False)
                     else:
                         raise
             else:
+                log_line(
+                    RUN_LOG_PATH,
+                    f"conversation_bypass request_id={request_id} reason={'failure' if conversation_failure else 'disabled'}",
+                )
                 reply_text = request_openai(use_thread=False)
             if not reply_text:
                 error_message = "empty_reply"
@@ -2063,6 +2131,12 @@ def chat_async() -> tuple[Response, int]:
         raw_message = worker_data.get("message", "")
         avatar_uuid = worker_data.get("avatar_key", "")
         npc_name = worker_data.get("npc_id", "")
+        log_line(
+            RUN_LOG_PATH,
+            "chat_async_worker_start "
+            f"request_id={callback_request_id} avatar={avatar_uuid or '-'} npc_id={npc_name or '-'} "
+            f"callback_url={redact_callback_url(callback_url)}",
+        )
         pre = {}
         try:
             pre = QuestEngine.quest_pre_chat(avatar_uuid, npc_name, raw_message)
@@ -2133,6 +2207,12 @@ def chat_async() -> tuple[Response, int]:
                 ]
             )
 
+        log_line(
+            RUN_LOG_PATH,
+            "chat_async_worker_payload "
+            f"request_id={callback_request_id} ok={int(ok)} pkg_chars={len(pkg_body)} "
+            f"callback_mode={'direct' if cb_body == pkg_body else 'fetch'}",
+        )
         success, error = post_callback(callback_url, callback_token, cb_body)
         if success:
             log_line(

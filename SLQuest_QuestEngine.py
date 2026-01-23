@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parent
+LOGS_DIR = BASE_DIR / "logs"
+QUEST_LOG_PATH = LOGS_DIR / "quest_engine.log"
 QUEST_DEFINITIONS_DIR = BASE_DIR / "quests" / "definitions"
 QUEST_STATE_DIR = BASE_DIR / "quests" / "state"
 
@@ -14,6 +16,20 @@ DEFAULT_QUEST_ID = "find_green_cube"
 
 def _now_ts() -> int:
     return int(time.time())
+
+
+def _log_line(line: str) -> None:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    with QUEST_LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
+def _log_event(event: str, avatar_key: str, quest_id: str, details: str = "") -> None:
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    suffix = f" {details}" if details else ""
+    _log_line(
+        f"[{timestamp}] event={event} avatar={avatar_key or '-'} quest_id={quest_id}{suffix}"
+    )
 
 
 def load_definition(quest_id: str) -> dict[str, Any]:
@@ -119,10 +135,28 @@ def build_quest_context(avatar_key: str, npc_id: str) -> str:
 
 def quest_pre_chat(avatar_key: str, npc_id: str, raw_message: str) -> dict[str, Any]:
     state = load_player_state(avatar_key)
+    _log_event(
+        "quest_pre_chat_loaded",
+        avatar_key,
+        DEFAULT_QUEST_ID,
+        f"npc_id={npc_id or '-'}",
+    )
     quest, changed = _ensure_quest_entry(state, DEFAULT_QUEST_ID, npc_id=npc_id)
     if changed:
         save_player_state(avatar_key, state)
+        _log_event(
+            "quest_pre_chat_state_saved",
+            avatar_key,
+            DEFAULT_QUEST_ID,
+            f"state={quest.get('state','-')} npc_id={npc_id or '-'}",
+        )
     quest_context = build_quest_context(avatar_key, npc_id)
+    _log_event(
+        "quest_pre_chat_context_built",
+        avatar_key,
+        DEFAULT_QUEST_ID,
+        f"state={quest.get('state','-')} context_len={len(quest_context)}",
+    )
     quest_pack = {"quest_id": DEFAULT_QUEST_ID, "state": quest.get("state", "")}
     return {"quest_context": quest_context, "quest": quest_pack, "actions": []}
 
@@ -130,6 +164,12 @@ def quest_pre_chat(avatar_key: str, npc_id: str, raw_message: str) -> dict[str, 
 def quest_post_chat(avatar_key: str, npc_id: str, raw_message: str) -> dict[str, Any]:
     state = load_player_state(avatar_key)
     quest = state.get("quests", {}).get(DEFAULT_QUEST_ID, {})
+    _log_event(
+        "quest_post_chat_loaded",
+        avatar_key,
+        DEFAULT_QUEST_ID,
+        f"state={quest.get('state','-')} npc_id={npc_id or '-'}",
+    )
     actions: list[str] = []
     changed = False
     if isinstance(quest, dict) and quest.get("state") == "clicked":
@@ -141,7 +181,19 @@ def quest_post_chat(avatar_key: str, npc_id: str, raw_message: str) -> dict[str,
             actions.append("Give:Green Cube Prize")
     if changed:
         save_player_state(avatar_key, state)
+        _log_event(
+            "quest_post_chat_state_saved",
+            avatar_key,
+            DEFAULT_QUEST_ID,
+            f"state={quest.get('state','-')} actions={','.join(actions) or '-'}",
+        )
     quest_pack = {"quest_id": DEFAULT_QUEST_ID, "state": quest.get("state", "")}
+    _log_event(
+        "quest_post_chat_done",
+        avatar_key,
+        DEFAULT_QUEST_ID,
+        f"state={quest.get('state','-')} actions={','.join(actions) or '-'}",
+    )
     return {"quest": quest_pack, "actions": actions}
 
 
@@ -149,6 +201,12 @@ def quest_handle_event(
     avatar_key: str, quest_id: str, event: str, meta: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     if quest_id != DEFAULT_QUEST_ID or event != "cube_clicked":
+        _log_event(
+            "quest_event_ignored",
+            avatar_key,
+            quest_id,
+            f"event={event or '-'}",
+        )
         return {"ok": True}
     meta = meta or {}
     state = load_player_state(avatar_key)
@@ -166,4 +224,16 @@ def quest_handle_event(
             changed = True
     if changed:
         save_player_state(avatar_key, state)
+        _log_event(
+            "quest_event_state_saved",
+            avatar_key,
+            DEFAULT_QUEST_ID,
+            f"state={quest.get('state','-')} object_key={meta.get('object_key') or '-'}",
+        )
+    _log_event(
+        "quest_event_processed",
+        avatar_key,
+        DEFAULT_QUEST_ID,
+        f"state={quest.get('state','-')} event={event}",
+    )
     return {"ok": True}
