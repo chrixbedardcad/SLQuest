@@ -86,7 +86,7 @@ def pack_actions(actions: list[str]) -> str:
 
 def pack_quest(q: dict[str, Any]) -> str:
     parts = []
-    for key in ("state", "hint", "reward"):
+    for key in ("quest_id", "state", "hint", "reward"):
         value = q.get(key)
         if isinstance(value, str) and value.strip():
             parts.append(f"{key}={value.strip()}")
@@ -1041,6 +1041,15 @@ def run_chat_logic(
     timestamp = (data.get("ts") or datetime.now(timezone.utc).isoformat())
     allow_web_search = parse_bool(data.get("allow_web_search"))
     reset_conversation = parse_bool(data.get("reset_conversation"))
+    quest_context = (data.get("quest_context") or "").strip()
+    llm_message = message
+    if quest_context:
+        llm_message = (
+            "<<QUEST_CONTEXT>>\n"
+            + quest_context
+            + "\n<</QUEST_CONTEXT>>\nPlayer: "
+            + message
+        )
 
     log_incoming_request(
         endpoint,
@@ -1222,13 +1231,13 @@ def run_chat_logic(
                     "tool_choice": "auto",
                 }
                 if use_thread and conversation_id:
-                    request_payload["input"] = message
+                    request_payload["input"] = llm_message
                     request_payload["conversation"] = conversation_id
                     request_payload["truncation"] = "auto"
                 else:
                     request_payload["instructions"] = instructions
                     history = load_history(avatar_key, npc_id, last_n=max_history)
-                    request_payload["input"] = build_messages(history, message)
+                    request_payload["input"] = build_messages(history, llm_message)
                 if effective_web:
                     if allowed_domains:
                         request_payload["tools"] = [
@@ -1254,7 +1263,7 @@ def run_chat_logic(
                 f"request_id={request_id}"
             )
             history = load_history(avatar_key, npc_id, last_n=max_history)
-            messages = build_messages(history, message)
+            messages = build_messages(history, llm_message)
             log_openai_request(
                 request_id,
                 client_req_id,
@@ -1851,6 +1860,74 @@ def sl_fetch() -> Response:
     return Response(body, status=200, mimetype="text/plain")
 
 
+@app.post("/quest/event")
+def quest_event() -> tuple[Response, int]:
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
+    raw_body = request.get_data(cache=True, as_text=True) or ""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_incoming_request(
+            "/quest/event",
+            request_id,
+            "",
+            "",
+            "",
+            data,
+            raw_body,
+            note="invalid_json",
+        )
+        log_request_line("/quest/event", request_id, "", "", "", "", "400", elapsed_ms)
+        return json_response(
+            {"ok": False, "error": "invalid_json", "request_id": request_id}, 400
+        )
+
+    avatar_key = (data.get("avatar_key") or "").strip()
+    quest_id = (data.get("quest_id") or "").strip()
+    event = (data.get("event") or "").strip()
+    object_key = (data.get("object_key") or "").strip()
+    if not avatar_key or not quest_id or not event:
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_incoming_request(
+            "/quest/event",
+            request_id,
+            "",
+            avatar_key,
+            "",
+            data,
+            raw_body,
+            note="missing_fields",
+        )
+        log_request_line("/quest/event", request_id, "", avatar_key, "", "", "400", elapsed_ms)
+        return json_response(
+            {"ok": False, "error": "missing_fields", "request_id": request_id}, 400
+        )
+
+    log_incoming_request(
+        "/quest/event",
+        request_id,
+        "",
+        avatar_key,
+        "",
+        data,
+        raw_body,
+        note="received",
+    )
+
+    QuestEngine.quest_handle_event(
+        avatar_key, quest_id, event, {"object_key": object_key}
+    )
+
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line("/quest/event", request_id, "", avatar_key, "", event, "200", elapsed_ms)
+    response_payload = {"ok": True}
+    log_response_payload(
+        "/quest/event", request_id, "", avatar_key, "", 200, response_payload
+    )
+    return json_response(response_payload, 200)
+
+
 @app.post("/chat_async")
 def chat_async() -> tuple[Response, int]:
     start_time = time.perf_counter()
@@ -1983,36 +2060,43 @@ def chat_async() -> tuple[Response, int]:
     worker_data = dict(data)
 
     def worker() -> None:
+        raw_message = worker_data.get("message", "")
+        avatar_uuid = worker_data.get("avatar_key", "")
+        npc_name = worker_data.get("npc_id", "")
+        pre = {}
+        try:
+            pre = QuestEngine.quest_pre_chat(avatar_uuid, npc_name, raw_message)
+        except Exception as exc:
+            log_error(f"quest_pre_chat_failed avatar={avatar_uuid} error={exc}")
+        worker_data["quest_context"] = pre.get("quest_context", "")
+
         payload, _status = run_chat_logic(
             "/chat_async", callback_request_id, worker_data, raw_body=""
         )
         pkg_cache_prune()
-        quest_out: dict[str, Any] = {}
-        session_id = thread_key(
-            worker_data.get("avatar_key", ""), worker_data.get("npc_id", "")
-        )
+
+        post = {}
         try:
-            quest_out = QuestEngine.handle_message(
-                session_id, worker_data.get("message", "")
-            )
+            post = QuestEngine.quest_post_chat(avatar_uuid, npc_name, raw_message)
         except Exception as exc:
-            log_error(f"quest_engine_failed session_id={session_id} error={exc}")
+            log_error(f"quest_post_chat_failed avatar={avatar_uuid} error={exc}")
 
-        chat_text = ""
-        if isinstance(quest_out, dict) and isinstance(quest_out.get("reply"), str):
-            chat_text = quest_out["reply"].strip()
+        chat_text = (payload.get("reply") or "").strip()
         if not chat_text:
-            chat_text = (payload.get("reply") or "").strip()
+            force_reply = post.get("force_reply")
+            if isinstance(force_reply, str):
+                chat_text = force_reply.strip()
 
-        actions: list[str] = []
-        if isinstance(quest_out, dict) and isinstance(quest_out.get("actions"), list):
-            actions.extend(
-                [action for action in quest_out["actions"] if isinstance(action, str)]
-            )
+        actions = []
+        if isinstance(pre.get("actions"), list):
+            actions.extend([action for action in pre["actions"] if isinstance(action, str)])
+        if isinstance(post.get("actions"), list):
+            actions.extend([action for action in post["actions"] if isinstance(action, str)])
 
-        qpack = ""
-        if isinstance(quest_out, dict) and isinstance(quest_out.get("quest"), dict):
-            qpack = pack_quest(quest_out["quest"])
+        quest_pack = post.get("quest") if isinstance(post.get("quest"), dict) else None
+        if not quest_pack and isinstance(pre.get("quest"), dict):
+            quest_pack = pre.get("quest")
+        qpack = pack_quest(quest_pack) if quest_pack else ""
 
         ok = bool(payload.get("ok", False))
         err = (payload.get("error") or "").strip()
