@@ -1,5 +1,5 @@
 integer LM_ACTION = 9200;
-list GIVE_ALLOW = ["Blue Feather"];
+list GIVE_ALLOW = ["Blue Feather", "Green Cube Prize"];
 
 list splitActions(string body)
 {
