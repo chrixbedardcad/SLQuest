@@ -1,4 +1,5 @@
 string SERVER_BASE = "http://slquest.duckdns.org:8001";
+string SERVER_BASE_FALLBACK = "";
 string NPC_ID = "";
 string PROFILE_PAGE_BASE = "https://world.secondlife.com/resident/";
 // NOTE: Place SLQuest_CallbackReceiver.lsl in the same linkset so callbacks can be routed.
@@ -19,6 +20,9 @@ integer LM_CB_REFRESH = 9102;
 integer LM_ACTION = 9200;
 integer FETCH_MAX = 16384;
 string DEBUG_TAG = "SLQuest Debug: ";
+integer ASYNC_ONLY = TRUE;
+integer ASYNC_WAIT_NOTICE_SEC = 8;
+integer ASYNC_WAIT_COOLDOWN_SEC = 20;
 
 list gActiveAvatars = [];
 list gSessionEndTimes = [];
@@ -26,6 +30,9 @@ list gQueuedMessages = [];
 list gInFlightAvatars = [];
 list gRequestMap = [];
 list gFetchMap = [];
+list gPendingAvatars = [];
+list gPendingStartTimes = [];
+list gPendingLastNotice = [];
 integer gListen = -1;
 integer gNextHintTime = 0;
 integer gNextGlobalGreetAt = 0;
@@ -73,6 +80,11 @@ string getConfigValue(string variable_key_name, string fallback)
 string getServerBase()
 {
     return getConfigValue("SERVER_BASE", SERVER_BASE);
+}
+
+string getServerBaseFallback()
+{
+    return getConfigValue("SERVER_BASE_FALLBACK", SERVER_BASE_FALLBACK);
 }
 
 string getNpcId()
@@ -223,6 +235,9 @@ resetSession()
     gInFlightAvatars = [];
     gRequestMap = [];
     gFetchMap = [];
+    gPendingAvatars = [];
+    gPendingStartTimes = [];
+    gPendingLastNotice = [];
     scheduleNextHint();
     gProfileRequest = NULL_KEY;
     gProfileAvatar = NULL_KEY;
@@ -237,6 +252,37 @@ integer findActiveIndex(key avatar)
 integer isActive(key avatar)
 {
     return findActiveIndex(avatar) != -1;
+}
+
+integer findPendingIndex(key avatar)
+{
+    return llListFindList(gPendingAvatars, [avatar]);
+}
+
+markPending(key avatar, integer now)
+{
+    integer index = findPendingIndex(avatar);
+    if (index == -1)
+    {
+        gPendingAvatars += [avatar];
+        gPendingStartTimes += [now];
+        gPendingLastNotice += [0];
+        return;
+    }
+    gPendingStartTimes = llListReplaceList(gPendingStartTimes, [now], index, index);
+    gPendingLastNotice = llListReplaceList(gPendingLastNotice, [0], index, index);
+}
+
+clearPending(key avatar)
+{
+    integer index = findPendingIndex(avatar);
+    if (index == -1)
+    {
+        return;
+    }
+    gPendingAvatars = llDeleteSubList(gPendingAvatars, index, index);
+    gPendingStartTimes = llDeleteSubList(gPendingStartTimes, index, index);
+    gPendingLastNotice = llDeleteSubList(gPendingLastNotice, index, index);
 }
 
 integer isInFlight(key avatar)
@@ -348,10 +394,55 @@ sendMessage(key avatar, string message)
         url = serverBase + "/chat_async";
         isAsync = TRUE;
     }
+    else if (ASYNC_ONLY)
+    {
+        llMessageLinked(LINK_SET, LM_CB_REFRESH, "", NULL_KEY);
+        llRegionSayTo(avatar, 0, "Please wait, initializing callback.");
+        return;
+    }
     debugTrace("request url=" + url + " async=" + (string)isAsync);
     gInFlightAvatars += [avatar];
+    if (isAsync)
+    {
+        markPending(avatar, nowUnix());
+    }
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync];
+    gRequestMap += [requestId, avatar, isAsync, payload, serverBase, 0];
+}
+
+integer isRetriableStatus(integer status, string body)
+{
+    if (status == 502 || status == 503 || status == 504)
+    {
+        return TRUE;
+    }
+    if (llSubStringIndex(body, "Unknown Host") != -1)
+    {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+integer retryWithFallback(key avatar, string payload, integer isAsync, integer attempt)
+{
+    if (attempt > 0)
+    {
+        return FALSE;
+    }
+    string fallbackBase = getServerBaseFallback();
+    if (fallbackBase == "")
+    {
+        return FALSE;
+    }
+    string url = fallbackBase + "/chat";
+    if (isAsync)
+    {
+        url = fallbackBase + "/chat_async";
+    }
+    debugTrace("retrying with fallback server=" + fallbackBase + " async=" + (string)isAsync);
+    key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
+    gRequestMap += [requestId, avatar, isAsync, payload, fallbackBase, attempt + 1];
+    return TRUE;
 }
 
 ensureListen()
@@ -504,8 +595,47 @@ default
         }
         key activeAvatar = llList2Key(gRequestMap, requestIndex + 1);
         integer isAsync = llList2Integer(gRequestMap, requestIndex + 2);
+        string payload = llList2String(gRequestMap, requestIndex + 3);
+        string serverBase = llList2String(gRequestMap, requestIndex + 4);
+        integer attempt = llList2Integer(gRequestMap, requestIndex + 5);
         debugTrace("response status=" + (string)status + " async=" + (string)isAsync);
-        gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 2);
+        gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 5);
+
+        if (status != 200 && isRetriableStatus(status, body))
+        {
+            if (retryWithFallback(activeAvatar, payload, isAsync, attempt))
+            {
+                return;
+            }
+            debugTrace("fallback unavailable or already used for server=" + serverBase);
+        }
+        if (!isActive(activeAvatar))
+        {
+            return;
+        }
+
+        if (isAsync)
+        {
+            if (status != 200)
+            {
+                integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
+                if (inflightIndex != -1)
+                {
+                    gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+                }
+                clearPending(activeAvatar);
+                updateDebugTexture(activeAvatar);
+                llRegionSayTo(activeAvatar, 0, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
+                string queued = getQueuedMessage(activeAvatar);
+                if (queued != "")
+                {
+                    clearQueuedMessage(activeAvatar);
+                    sendMessage(activeAvatar, queued);
+                }
+            }
+            return;
+        }
+
         string replyType = llJsonValueType(body, ["reply"]);
         string reply = "";
         if (replyType == JSON_STRING)
@@ -522,38 +652,6 @@ default
                 debugBody = llGetSubString(debugBody, 0, 299) + "...";
             }
             llOwnerSay(debugBody);
-        }
-
-        if (!isActive(activeAvatar))
-        {
-            return;
-        }
-
-        if (isAsync)
-        {
-            string okValue = llJsonGetValue(body, ["ok"]);
-            if (status != 200 || okValue != "true")
-            {
-                string errorValue = llJsonGetValue(body, ["error"]);
-                if (errorValue == "callback_not_registered" || errorValue == "callback_token_invalid")
-                {
-                    llMessageLinked(LINK_SET, LM_CB_REFRESH, "", NULL_KEY);
-                }
-                integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
-                if (inflightIndex != -1)
-                {
-                    gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
-                }
-                updateDebugTexture(activeAvatar);
-                llRegionSayTo(activeAvatar, 0, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
-                string queued = getQueuedMessage(activeAvatar);
-                if (queued != "")
-                {
-                    clearQueuedMessage(activeAvatar);
-                    sendMessage(activeAvatar, queued);
-                }
-            }
-            return;
         }
 
         integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
@@ -624,6 +722,7 @@ default
             {
                 gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
             }
+            clearPending(avatar);
             if (!isActive(avatar))
             {
                 return;
@@ -690,6 +789,24 @@ default
                 key avatar = llList2Key(gActiveAvatars, index);
                 endSession(avatar, "Session ended. Touch me again to talk.");
             }
+        }
+        integer pendingCount = llGetListLength(gPendingAvatars);
+        for (index = pendingCount - 1; index >= 0; --index)
+        {
+            key avatar = llList2Key(gPendingAvatars, index);
+            if (!isActive(avatar))
+            {
+                clearPending(avatar);
+                jump continue_pending;
+            }
+            integer startTime = llList2Integer(gPendingStartTimes, index);
+            integer lastNotice = llList2Integer(gPendingLastNotice, index);
+            if (startTime > 0 && (now - startTime) >= ASYNC_WAIT_NOTICE_SEC && (now - lastNotice) >= ASYNC_WAIT_COOLDOWN_SEC)
+            {
+                llRegionSayTo(avatar, 0, "Please wait, I'm thinking...");
+                gPendingLastNotice = llListReplaceList(gPendingLastNotice, [now], index, index);
+            }
+@continue_pending;
         }
         if (llGetListLength(gActiveAvatars) > 0)
         {
