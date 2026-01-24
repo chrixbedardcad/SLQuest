@@ -43,6 +43,13 @@ def load_definition(quest_id: str) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _quest_applies_to_npc(definition: dict[str, Any], npc_id: str) -> bool:
+    target_npc = (definition.get("npc_id") or "").strip()
+    if not target_npc:
+        return True
+    return target_npc == npc_id
+
+
 def load_player_state(avatar_key: str) -> dict[str, Any]:
     if not avatar_key:
         return {"quests": {}}
@@ -99,6 +106,8 @@ def _ensure_quest_entry(
 
 def build_quest_context(avatar_key: str, npc_id: str) -> str:
     definition = load_definition(DEFAULT_QUEST_ID)
+    if not _quest_applies_to_npc(definition, npc_id):
+        return ""
     state = load_player_state(avatar_key)
     quest = state.get("quests", {}).get(DEFAULT_QUEST_ID, {})
     state_value = quest.get("state")
@@ -116,6 +125,7 @@ def build_quest_context(avatar_key: str, npc_id: str) -> str:
 
     lines = [
         f"quest_id={DEFAULT_QUEST_ID}",
+        f"npc_id={definition.get('npc_id') or npc_id}",
         f"started={'true' if started else 'false'}",
         f"clicked={'true' if clicked else 'false'}",
         f"completed={'true' if completed else 'false'}",
@@ -134,6 +144,19 @@ def build_quest_context(avatar_key: str, npc_id: str) -> str:
 
 
 def quest_pre_chat(avatar_key: str, npc_id: str, raw_message: str) -> dict[str, Any]:
+    definition = load_definition(DEFAULT_QUEST_ID)
+    if not _quest_applies_to_npc(definition, npc_id):
+        _log_event(
+            "quest_pre_chat_skipped",
+            avatar_key,
+            DEFAULT_QUEST_ID,
+            f"npc_id={npc_id or '-'}",
+        )
+        return {
+            "quest_context": "",
+            "quest": {"quest_id": DEFAULT_QUEST_ID, "state": ""},
+            "actions": [],
+        }
     state = load_player_state(avatar_key)
     _log_event(
         "quest_pre_chat_loaded",
@@ -162,6 +185,15 @@ def quest_pre_chat(avatar_key: str, npc_id: str, raw_message: str) -> dict[str, 
 
 
 def quest_post_chat(avatar_key: str, npc_id: str, raw_message: str) -> dict[str, Any]:
+    definition = load_definition(DEFAULT_QUEST_ID)
+    if not _quest_applies_to_npc(definition, npc_id):
+        _log_event(
+            "quest_post_chat_skipped",
+            avatar_key,
+            DEFAULT_QUEST_ID,
+            f"npc_id={npc_id or '-'}",
+        )
+        return {"quest": {"quest_id": DEFAULT_QUEST_ID, "state": ""}, "actions": []}
     state = load_player_state(avatar_key)
     quest = state.get("quests", {}).get(DEFAULT_QUEST_ID, {})
     _log_event(
