@@ -330,6 +330,7 @@ handlePipePackage(string body)
     {
         return;
     }
+    clearPending(avatar);
     integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
     if (inflightIndex != -1)
     {
@@ -498,7 +499,7 @@ startSession(key avatar)
     gSessionEndTimes += [nowUnix() + SESSION_TIMEOUT_SEC];
     gQueuedMessages += [""];
     ensureListen();
-    llRegionSayTo(avatar, 0, "Chat started. Say something in public chat near me.");
+    llRegionSayTo(avatar, 0, "Hello " + llGetDisplayName(avatar) + "! Say something in public chat near me.");
     updateDebugTexture(avatar);
     gProfileClearAt = 0;
 }
