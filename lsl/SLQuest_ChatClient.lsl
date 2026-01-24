@@ -315,6 +315,31 @@ clearQueuedMessage(key avatar)
     setQueuedMessage(avatar, "");
 }
 
+retryQueuedAfterCallbackRefresh()
+{
+    integer count = llGetListLength(gActiveAvatars);
+    integer index;
+    for (index = 0; index < count; ++index)
+    {
+        key avatar = llList2Key(gActiveAvatars, index);
+        if (!isActive(avatar))
+        {
+            jump continue_retry;
+        }
+        if (isInFlight(avatar))
+        {
+            jump continue_retry;
+        }
+        string queued = getQueuedMessage(avatar);
+        if (queued != "")
+        {
+            clearQueuedMessage(avatar);
+            sendMessage(avatar, queued);
+        }
+@continue_retry;
+    }
+}
+
 handlePipePackage(string body)
 {
     list segs = pipeSplit(body);
@@ -662,6 +687,32 @@ default
         {
             if (status != 200)
             {
+                if (status == 409 && llGetSubString(body, 0, 0) == "{")
+                {
+                    string errorCode = llJsonGetValue(body, ["error"]);
+                    if (errorCode == "callback_not_registered")
+                    {
+                        string failedMessage = llJsonGetValue(payload, ["message"]);
+                        if (failedMessage != JSON_INVALID && failedMessage != "")
+                        {
+                            setQueuedMessage(activeAvatar, failedMessage);
+                        }
+                        gCallbackToken = "";
+                        llMessageLinked(LINK_SET, LM_CB_REFRESH, "", NULL_KEY);
+                        if (isActive(activeAvatar))
+                        {
+                            llRegionSayTo(activeAvatar, 0, "Reconnecting... Please wait a moment.");
+                        }
+                        integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
+                        if (inflightIndex != -1)
+                        {
+                            gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+                        }
+                        clearPending(activeAvatar);
+                        updateDebugTexture(activeAvatar);
+                        return;
+                    }
+                }
                 integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
                 if (inflightIndex != -1)
                 {
@@ -747,6 +798,7 @@ default
         if (num == LM_CB_TOKEN)
         {
             gCallbackToken = str;
+            retryQueuedAfterCallbackRefresh();
             return;
         }
         if (num != LM_CB_REPLY)
