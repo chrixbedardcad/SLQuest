@@ -23,6 +23,7 @@ string DEBUG_TAG = "SLQuest Debug: ";
 integer ASYNC_ONLY = TRUE;
 integer ASYNC_WAIT_NOTICE_SEC = 8;
 integer ASYNC_WAIT_COOLDOWN_SEC = 20;
+integer USE_PUBLIC_SAY = FALSE;
 
 list gActiveAvatars = [];
 list gSessionEndTimes = [];
@@ -85,6 +86,26 @@ string getServerBase()
 string getServerBaseFallback()
 {
     return getConfigValue("SERVER_BASE_FALLBACK", SERVER_BASE_FALLBACK);
+}
+
+integer usePublicSay()
+{
+    string value = getConfigValue("PUBLIC_SAY", "");
+    if (value != "")
+    {
+        return ((integer)value != 0);
+    }
+    return USE_PUBLIC_SAY;
+}
+
+sayTo(key avatar, string message)
+{
+    if (usePublicSay())
+    {
+        llSay(0, message);
+        return;
+    }
+    llRegionSayTo(avatar, 0, message);
 }
 
 string getNpcId()
@@ -368,7 +389,7 @@ handlePipePackage(string body)
     updateDebugTexture(avatar);
     if (chat != "")
     {
-        llRegionSayTo(avatar, 0, chat);
+        sayTo(avatar, chat);
     }
     if (act != "")
     {
@@ -410,7 +431,7 @@ sendMessage(key avatar, string message)
     if (serverBase == "")
     {
         llOwnerSay("SERVER_BASE not set. Add SERVER_BASE=<url> to the object description.");
-        llRegionSayTo(avatar, 0, "NPC is offline. Server URL is not configured.");
+        sayTo(avatar, "NPC is offline. Server URL is not configured.");
         return;
     }
     string url = serverBase + "/chat";
@@ -423,7 +444,7 @@ sendMessage(key avatar, string message)
     else if (ASYNC_ONLY)
     {
         llMessageLinked(LINK_SET, LM_CB_REFRESH, "", NULL_KEY);
-        llRegionSayTo(avatar, 0, "Please wait, initializing callback.");
+        sayTo(avatar, "Please wait, initializing callback.");
         return;
     }
     debugTrace("request url=" + url + " async=" + (string)isAsync);
@@ -524,7 +545,7 @@ startSession(key avatar)
     gSessionEndTimes += [nowUnix() + SESSION_TIMEOUT_SEC];
     gQueuedMessages += [""];
     ensureListen();
-    llRegionSayTo(avatar, 0, "Hello " + llGetDisplayName(avatar) + "! Say something in public chat near me.");
+    sayTo(avatar, "Hello " + llGetDisplayName(avatar) + "! Say something in public chat near me.");
     updateDebugTexture(avatar);
     gProfileClearAt = 0;
 }
@@ -544,7 +565,7 @@ endSession(key avatar, string message)
     {
         gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
     }
-    llRegionSayTo(avatar, 0, message);
+    sayTo(avatar, message);
     if (llGetListLength(gActiveAvatars) == 0 && gListen != -1)
     {
         llListenRemove(gListen);
@@ -637,7 +658,7 @@ default
                 }
                 if (isActive(avatar))
                 {
-                    llRegionSayTo(avatar, 0, "Sorry, fetch failed. Try again.");
+                    sayTo(avatar, "Sorry, fetch failed. Try again.");
                 }
                 string queuedFail = getQueuedMessage(avatar);
                 if (queuedFail != "")
@@ -701,7 +722,7 @@ default
                         llMessageLinked(LINK_SET, LM_CB_REFRESH, "", NULL_KEY);
                         if (isActive(activeAvatar))
                         {
-                            llRegionSayTo(activeAvatar, 0, "Reconnecting... Please wait a moment.");
+                            sayTo(activeAvatar, "Reconnecting... Please wait a moment.");
                         }
                         integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
                         if (inflightIndex != -1)
@@ -720,7 +741,7 @@ default
                 }
                 clearPending(activeAvatar);
                 updateDebugTexture(activeAvatar);
-                llRegionSayTo(activeAvatar, 0, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
+                sayTo(activeAvatar, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
                 string queued = getQueuedMessage(activeAvatar);
                 if (queued != "")
                 {
@@ -758,7 +779,7 @@ default
         if (status != 200)
         {
             updateDebugTexture(activeAvatar);
-            llRegionSayTo(activeAvatar, 0, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
+            sayTo(activeAvatar, "ERROR Status: " + (string) status + ": Sorry, I glitched. Try again.");
         }
         else
         {
@@ -768,20 +789,18 @@ default
                 if (okValue == JSON_INVALID)
                 {
                     updateDebugTexture(activeAvatar);
-                    llRegionSayTo(activeAvatar, 0, "ERROR Invalid JSON response: Sorry, I glitched. Try again.");
+                    sayTo(activeAvatar, "ERROR Invalid JSON response: Sorry, I glitched. Try again.");
                 }
                 else
                 {
                     updateDebugTexture(activeAvatar);
-                    llRegionSayTo(activeAvatar, 0, "ERROR Missing reply in server response: Sorry, I glitched. Try again.");
+                    sayTo(activeAvatar, "ERROR Missing reply in server response: Sorry, I glitched. Try again.");
                 }
             }
             else
             {
                 updateDebugTexture(activeAvatar);
-               // llRegionSayTo(activeAvatar, 0, reply);
-               llSay(0,llGetDisplayName(activeAvatar) +": " + reply);
-                
+                sayTo(activeAvatar, reply);
             }
         }
 
@@ -824,7 +843,7 @@ default
                 return;
             }
             updateDebugTexture(avatar);
-            llRegionSayTo(avatar, 0, reply);
+            sayTo(avatar, reply);
             string queued = getQueuedMessage(avatar);
             if (queued != "")
             {
@@ -899,7 +918,7 @@ default
             integer lastNotice = llList2Integer(gPendingLastNotice, index);
             if (startTime > 0 && (now - startTime) >= ASYNC_WAIT_NOTICE_SEC && (now - lastNotice) >= ASYNC_WAIT_COOLDOWN_SEC)
             {
-                llRegionSayTo(avatar, 0, "Please wait, I'm thinking...");
+                sayTo(avatar, "Please wait, I'm thinking...");
                 gPendingLastNotice = llListReplaceList(gPendingLastNotice, [now], index, index);
             }
 @continue_pending;
