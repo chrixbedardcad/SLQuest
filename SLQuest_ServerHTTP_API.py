@@ -2208,6 +2208,7 @@ def chat_async() -> tuple[Response, int]:
                 ("CHAT", chat_text),
                 ("ACT", act_str),
                 ("Q", qpack),
+                ("CB", callback_token),
                 ("ERR", err),
             ]
         )
@@ -2225,6 +2226,7 @@ def chat_async() -> tuple[Response, int]:
                     ("NPC", worker_data.get("npc_id", "")),
                     ("OK", "1" if ok else "0"),
                     ("TOKEN", fetch_token),
+                    ("CB", callback_token),
                     ("ERR", err),
                 ]
             )

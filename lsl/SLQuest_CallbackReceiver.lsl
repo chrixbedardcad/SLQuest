@@ -112,6 +112,51 @@ string getQueryParam(string qs, string ikey)
     return "";
 }
 
+string getQueryString(key reqId)
+{
+    string qs = llGetHTTPHeader(reqId, "x-query-string");
+    if (qs != "")
+    {
+        return qs;
+    }
+    qs = llGetHTTPHeader(reqId, "x-querystring");
+    if (qs != "")
+    {
+        return qs;
+    }
+    return "";
+}
+
+list pipeSplit(string s)
+{
+    return llParseString2List(s, ["|"], []);
+}
+
+string pipeGet(list segs, string ikey)
+{
+    integer i;
+    string prefix = ikey + "=";
+    for (i = 0; i < llGetListLength(segs); ++i)
+    {
+        string seg = llList2String(segs, i);
+        if (llSubStringIndex(seg, prefix) == 0)
+        {
+            return llUnescapeURL(llGetSubString(seg, llStringLength(prefix), -1));
+        }
+    }
+    return "";
+}
+
+string extractCallbackTokenFromBody(string body)
+{
+    if (llSubStringIndex(body, "CB=") == -1)
+    {
+        return "";
+    }
+    list segs = pipeSplit(body);
+    return pipeGet(segs, "CB");
+}
+
 registerCallback()
 {
     string serverBase = getServerBase();
@@ -188,8 +233,12 @@ default
         {
             return;
         }
-        string qs = llGetHTTPHeader(id, "x-query-string");
+        string qs = getQueryString(id);
         string tokenQ = getQueryParam(qs, "t");
+        if (tokenQ == "")
+        {
+            tokenQ = extractCallbackTokenFromBody(body);
+        }
         if (tokenQ != "" && tokenQ != gCallbackToken)
         {
             debugTrace("callback token mismatch");
@@ -200,7 +249,7 @@ default
             string token = llJsonGetValue(body, ["callback_token"]);
             if (token != gCallbackToken)
             {
-                debugTrace("callback token missing/invalid");
+                debugTrace("callback token missing/invalid qs=" + qs);
                 return;
             }
         }
