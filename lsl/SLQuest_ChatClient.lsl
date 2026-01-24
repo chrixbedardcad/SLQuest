@@ -18,6 +18,7 @@ integer LM_CB_REPLY = 9101;
 integer LM_CB_REFRESH = 9102;
 integer LM_ACTION = 9200;
 integer FETCH_MAX = 16384;
+string DEBUG_TAG = "SLQuest Debug: ";
 
 list gActiveAvatars = [];
 list gSessionEndTimes = [];
@@ -33,6 +34,15 @@ key gProfileRequest = NULL_KEY;
 key gProfileAvatar = NULL_KEY;
 integer gProfileClearAt = 0;
 string gCallbackToken = "";
+
+debugTrace(string message)
+{
+    if (!DEBUG)
+    {
+        return;
+    }
+    llOwnerSay(DEBUG_TAG + message);
+}
 
 key getRootKey()
 {
@@ -323,13 +333,22 @@ sendMessage(key avatar, string message)
 {
     string clientReqId = (string)llGenerateKey();
     string payload = buildPayload(avatar, message, clientReqId);
-    string url = getServerBase() + "/chat";
+    string serverBase = getServerBase();
+    debugTrace("sendMessage avatar=" + (string)avatar + " server=" + serverBase + " cb=" + (string)(gCallbackToken != ""));
+    if (serverBase == "")
+    {
+        llOwnerSay("SERVER_BASE not set. Add SERVER_BASE=<url> to the object description.");
+        llRegionSayTo(avatar, 0, "NPC is offline. Server URL is not configured.");
+        return;
+    }
+    string url = serverBase + "/chat";
     integer isAsync = FALSE;
     if (gCallbackToken != "")
     {
-        url = getServerBase() + "/chat_async";
+        url = serverBase + "/chat_async";
         isAsync = TRUE;
     }
+    debugTrace("request url=" + url + " async=" + (string)isAsync);
     gInFlightAvatars += [avatar];
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
     gRequestMap += [requestId, avatar, isAsync];
@@ -485,6 +504,7 @@ default
         }
         key activeAvatar = llList2Key(gRequestMap, requestIndex + 1);
         integer isAsync = llList2Integer(gRequestMap, requestIndex + 2);
+        debugTrace("response status=" + (string)status + " async=" + (string)isAsync);
         gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 2);
         string replyType = llJsonValueType(body, ["reply"]);
         string reply = "";

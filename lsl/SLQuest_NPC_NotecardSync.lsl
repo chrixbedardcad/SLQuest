@@ -10,6 +10,8 @@ string DISPLAY_NAME = "";
 string MODEL = "gpt-5.2";
 integer MAX_HISTORY_EVENTS = 12;
 string NOTECARD = "system.md";
+integer DEBUG = TRUE;
+string DEBUG_TAG = "SLQuest Debug: ";
 
 key gNotecardQuery;
 integer gLineIndex = 0;
@@ -18,6 +20,15 @@ key gNotecardKey = NULL_KEY;
 integer gLastHttpStatus = 0;
 string gLastHttpBody = "";
 integer gListenHandle = 0;
+
+debugTrace(string message)
+{
+    if (!DEBUG)
+    {
+        return;
+    }
+    llOwnerSay(DEBUG_TAG + message);
+}
 
 string getConfigValue(string variable_key_name, string fallback)
 {
@@ -80,12 +91,19 @@ string buildPayload()
 sendUpdate()
 {
     string payload = buildPayload();
+    string serverUrl = getServerUrl();
+    debugTrace("sendUpdate server=" + serverUrl + " payload=" + (string)llStringLength(payload));
+    if (serverUrl == "")
+    {
+        llOwnerSay("SERVER_URL not set. Add SERVER_URL=<url> to the object description.");
+        return;
+    }
     list headers = [
         HTTP_METHOD, "POST",
         HTTP_MIMETYPE, "application/json;charset=utf-8",
         HTTP_BODY_MAXLENGTH, 4096
     ];
-    llHTTPRequest(getServerUrl() + "/admin/npc/upsert", headers, payload);
+    llHTTPRequest(serverUrl + "/admin/npc/upsert", headers, payload);
 }
 
 startNotecardRead()
@@ -111,6 +129,7 @@ default
     {
         gNotecardKey = llGetInventoryKey(NOTECARD);
         gListenHandle = llListen(1, "", llGetOwner(), "");
+        debugTrace("state_entry server=" + getServerUrl());
     }
 
     changed(integer change)
@@ -185,6 +204,7 @@ default
     {
         gLastHttpStatus = status;
         gLastHttpBody = body;
+        debugTrace("sync response status=" + (string)status + " body=" + (string)llStringLength(body));
         if (status >= 200 && status < 300)
         {
             llOwnerSay("NPC sync success: " + (string)status);
