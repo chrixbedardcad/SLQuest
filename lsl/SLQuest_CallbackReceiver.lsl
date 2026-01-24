@@ -1,4 +1,5 @@
 string SERVER_BASE = "http://slquest.duckdns.org:8001";
+string SERVER_BASE_FALLBACK = "";
 string NPC_ID = "";
 integer LM_CB_TOKEN = 9100;
 integer LM_CB_REPLY = 9101;
@@ -44,6 +45,37 @@ string getConfigValue(string variable_key_name, string fallback)
 string getServerBase()
 {
     return getConfigValue("SERVER_BASE", SERVER_BASE);
+}
+
+string getServerBaseFallback()
+{
+    return getConfigValue("SERVER_BASE_FALLBACK", SERVER_BASE_FALLBACK);
+}
+
+integer isRetriableStatus(integer status, string body)
+{
+    if (status == 502 || status == 503 || status == 504)
+    {
+        return TRUE;
+    }
+    if (llSubStringIndex(body, "Unknown Host") != -1)
+    {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+notifyFallbackHint(integer status, string body)
+{
+    if (!isRetriableStatus(status, body))
+    {
+        return;
+    }
+    if (getServerBaseFallback() != "")
+    {
+        return;
+    }
+    llOwnerSay("Callback register failed to resolve hostname. Set SERVER_BASE_FALLBACK=<url> (IP or alternate domain) in the object description.");
 }
 
 key getRootKey()
@@ -184,7 +216,26 @@ default
         debugTrace("register response status=" + (string)status);
         if (status != 200)
         {
+            if (isRetriableStatus(status, body) && getServerBaseFallback() != "")
+            {
+                string fallbackBase = getServerBaseFallback();
+                string payload = llList2Json(JSON_OBJECT, [
+                    "object_key", (string)getRootKey(),
+                    "npc_id", getNpcId(),
+                    "region", llGetRegionName(),
+                    "callback_url", gCallbackURL,
+                    "ts", llGetTimestamp()
+                ]);
+                gRegisterReq = llHTTPRequest(
+                    fallbackBase + "/sl/callback/register",
+                    [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"],
+                    payload
+                );
+                debugTrace("register callback fallback server=" + fallbackBase);
+                return;
+            }
             llOwnerSay("Callback registration failed: status=" + (string)status);
+            notifyFallbackHint(status, body);
             return;
         }
         string token = llJsonGetValue(body, ["callback_token"]);

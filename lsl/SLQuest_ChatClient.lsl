@@ -445,6 +445,19 @@ integer retryWithFallback(key avatar, string payload, integer isAsync, integer a
     return TRUE;
 }
 
+notifyFallbackHint(integer status, string body)
+{
+    if (!isRetriableStatus(status, body))
+    {
+        return;
+    }
+    if (getServerBaseFallback() != "")
+    {
+        return;
+    }
+    llOwnerSay("Server hostname unresolved. Set SERVER_BASE_FALLBACK=<url> (IP or alternate domain) in the object description.");
+}
+
 ensureListen()
 {
     if (gListen != -1)
@@ -608,6 +621,7 @@ default
                 return;
             }
             debugTrace("fallback unavailable or already used for server=" + serverBase);
+            notifyFallbackHint(status, body);
         }
         if (!isActive(activeAvatar))
         {
