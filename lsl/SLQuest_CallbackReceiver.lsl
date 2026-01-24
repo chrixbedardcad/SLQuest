@@ -290,7 +290,7 @@ default
         string token = llJsonGetValue(body, ["callback_token"]);
         if (token == JSON_INVALID || token == "")
         {
-            llOwnerSay("Callback registration missing token.");
+            llOwnerSay("Callback registration missing auth data.");
             return;
         }
         gCallbackToken = token;
