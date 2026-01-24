@@ -1892,7 +1892,15 @@ def sl_callback_register() -> tuple[Response, int]:
             400,
         )
 
-    callback_token = make_callback_token()
+    callback_entry = get_callback(object_key, npc_id)
+    if (
+        callback_entry
+        and callback_entry.get("url") == callback_url
+        and callback_entry.get("token")
+    ):
+        callback_token = callback_entry["token"]
+    else:
+        callback_token = make_callback_token()
     set_callback(object_key, npc_id, callback_url, callback_token, region)
 
     response_payload = {
