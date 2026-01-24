@@ -21,6 +21,8 @@ key gNotecardKey = NULL_KEY;
 integer gLastHttpStatus = 0;
 string gLastHttpBody = "";
 integer gListenHandle = 0;
+integer gRetryAttempt = 0;
+string gLastServerUrl = "";
 
 debugTrace(string message)
 {
@@ -135,6 +137,8 @@ sendUpdate()
         HTTP_MIMETYPE, "application/json;charset=utf-8",
         HTTP_BODY_MAXLENGTH, 4096
     ];
+    gRetryAttempt = 0;
+    gLastServerUrl = serverUrl;
     llHTTPRequest(serverUrl + "/admin/npc/upsert", headers, payload);
 }
 
@@ -151,6 +155,26 @@ integer retryWithFallback(string payload)
         HTTP_BODY_MAXLENGTH, 4096
     ];
     llHTTPRequest(fallbackUrl + "/admin/npc/upsert", headers, payload);
+    return TRUE;
+}
+
+integer retryWithPrimary(string payload)
+{
+    if (gRetryAttempt > 0)
+    {
+        return FALSE;
+    }
+    if (gLastServerUrl == "")
+    {
+        return FALSE;
+    }
+    list headers = [
+        HTTP_METHOD, "POST",
+        HTTP_MIMETYPE, "application/json;charset=utf-8",
+        HTTP_BODY_MAXLENGTH, 4096
+    ];
+    gRetryAttempt = 1;
+    llHTTPRequest(gLastServerUrl + "/admin/npc/upsert", headers, payload);
     return TRUE;
 }
 
@@ -265,6 +289,11 @@ default
                 if (retryWithFallback(payload))
                 {
                     debugTrace("retrying sync with fallback server=" + getServerUrlFallback());
+                    return;
+                }
+                if (retryWithPrimary(payload))
+                {
+                    debugTrace("retrying sync with primary server=" + gLastServerUrl);
                     return;
                 }
             }
