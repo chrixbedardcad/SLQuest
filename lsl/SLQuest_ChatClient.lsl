@@ -23,7 +23,7 @@ string DEBUG_TAG = "SLQuest Debug: ";
 integer ASYNC_ONLY = TRUE;
 integer ASYNC_WAIT_NOTICE_SEC = 8;
 integer ASYNC_WAIT_COOLDOWN_SEC = 20;
-integer USE_PUBLIC_SAY = FALSE;
+integer USE_PUBLIC_SAY = TRUE;
 
 list gActiveAvatars = [];
 list gSessionEndTimes = [];
