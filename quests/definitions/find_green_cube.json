@@ -3,6 +3,7 @@
   "name": "Find the Green Cube",
   "version": 1,
   "type": "click_object_then_return",
+  "npc_id": "SLQuest_DefaultNPC",
   "reward": {
     "item_name": "Green Cube Prize"
   },

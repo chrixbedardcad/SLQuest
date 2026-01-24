@@ -1986,6 +1986,20 @@ def quest_event() -> tuple[Response, int]:
     QuestEngine.quest_handle_event(
         avatar_key, quest_id, event, {"object_key": object_key}
     )
+    definition = QuestEngine.load_definition(quest_id)
+    npc_id = (definition.get("npc_id") or "SLQuest_DefaultNPC").strip()
+    conversation_id = load_conversation_id(avatar_key, npc_id)
+    quest_context = QuestEngine.build_quest_context(avatar_key, npc_id)
+    if conversation_id and quest_context:
+        added = add_conversation_developer_item(
+            request_id,
+            conversation_id,
+            f"Quest update:\n{quest_context}",
+        )
+        if not added:
+            log_error(
+                f"quest_update_prompt_failed request_id={request_id} avatar={avatar_key} npc_id={npc_id}"
+            )
 
     elapsed_ms = int((time.perf_counter() - start_time) * 1000)
     log_request_line("/quest/event", request_id, "", avatar_key, "", event, "200", elapsed_ms)
