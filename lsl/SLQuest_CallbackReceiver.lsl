@@ -2,12 +2,23 @@ string SERVER_BASE = "http://slquest.duckdns.org:8001";
 string NPC_ID = "";
 integer LM_CB_TOKEN = 9100;
 integer LM_CB_REPLY = 9101;
+integer DEBUG = TRUE;
+string DEBUG_TAG = "SLQuest Debug: ";
 
 string gCallbackURL = "";
 string gCallbackToken = "";
 key gRegisterReq = NULL_KEY;
 integer LM_CB_REFRESH = 9102;
 integer gRequestInFlight = FALSE;
+
+debugTrace(string message)
+{
+    if (!DEBUG)
+    {
+        return;
+    }
+    llOwnerSay(DEBUG_TAG + message);
+}
 
 string getConfigValue(string variable_key_name, string fallback)
 {
@@ -71,6 +82,12 @@ string getQueryParam(string qs, string ikey)
 
 registerCallback()
 {
+    string serverBase = getServerBase();
+    if (serverBase == "")
+    {
+        llOwnerSay("SERVER_BASE not set. Add SERVER_BASE=<url> to the object description.");
+        return;
+    }
     string payload = llList2Json(JSON_OBJECT, [
         "object_key", (string)getRootKey(),
         "npc_id", getNpcId(),
@@ -79,10 +96,11 @@ registerCallback()
         "ts", llGetTimestamp()
     ]);
     gRegisterReq = llHTTPRequest(
-        getServerBase() + "/sl/callback/register",
+        serverBase + "/sl/callback/register",
         [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"],
         payload
     );
+    debugTrace("register callback url=" + gCallbackURL);
 }
 
 requestCallbackURL()
@@ -103,6 +121,12 @@ default
     state_entry()
     {
         // Must run in the same linkset as SLQuest_ChatClient.lsl.
+        debugTrace("state_entry server=" + getServerBase());
+        if (getServerBase() == "")
+        {
+            llOwnerSay("SERVER_BASE not set. Add SERVER_BASE=<url> to the object description.");
+            return;
+        }
         requestCallbackURL();
     }
 
@@ -112,6 +136,7 @@ default
         {
             gRequestInFlight = FALSE;
             gCallbackURL = body;
+            debugTrace("callback url granted");
             registerCallback();
             return;
         }
@@ -135,6 +160,7 @@ default
         string tokenQ = getQueryParam(qs, "t");
         if (tokenQ != "" && tokenQ != gCallbackToken)
         {
+            debugTrace("callback token mismatch");
             return;
         }
         if (tokenQ == "")
@@ -142,6 +168,7 @@ default
             string token = llJsonGetValue(body, ["callback_token"]);
             if (token != gCallbackToken)
             {
+                debugTrace("callback token missing/invalid");
                 return;
             }
         }
@@ -154,6 +181,7 @@ default
         {
             return;
         }
+        debugTrace("register response status=" + (string)status);
         if (status != 200)
         {
             llOwnerSay("Callback registration failed: status=" + (string)status);
