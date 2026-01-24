@@ -612,6 +612,10 @@ default
         string serverBase = llList2String(gRequestMap, requestIndex + 4);
         integer attempt = llList2Integer(gRequestMap, requestIndex + 5);
         debugTrace("response status=" + (string)status + " async=" + (string)isAsync);
+        if (isAsync)
+        {
+            debugTrace("sync response status=" + (string)status + " body=" + (string)llStringLength(body));
+        }
         gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 5);
 
         if (status != 200 && isRetriableStatus(status, body))
