@@ -445,6 +445,27 @@ integer retryWithFallback(key avatar, string payload, integer isAsync, integer a
     return TRUE;
 }
 
+integer retryWithPrimary(string serverBase, key avatar, string payload, integer isAsync, integer attempt)
+{
+    if (attempt > 0)
+    {
+        return FALSE;
+    }
+    if (serverBase == "")
+    {
+        return FALSE;
+    }
+    string url = serverBase + "/chat";
+    if (isAsync)
+    {
+        url = serverBase + "/chat_async";
+    }
+    debugTrace("retrying with primary server=" + serverBase + " async=" + (string)isAsync);
+    key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
+    gRequestMap += [requestId, avatar, isAsync, payload, serverBase, attempt + 1];
+    return TRUE;
+}
+
 notifyFallbackHint(integer status, string body)
 {
     if (!isRetriableStatus(status, body))
@@ -621,6 +642,10 @@ default
         if (status != 200 && isRetriableStatus(status, body))
         {
             if (retryWithFallback(activeAvatar, payload, isAsync, attempt))
+            {
+                return;
+            }
+            if (retryWithPrimary(serverBase, activeAvatar, payload, isAsync, attempt))
             {
                 return;
             }
