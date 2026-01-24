@@ -1,5 +1,5 @@
 // SLQuest NPC Notecard Sync Example
-// Reads a notecard named "system.md" and pushes it to the SLQuest server.
+// Reads notecards named "system.md" and "first_conversation.md" and pushes them to the SLQuest server.
 // NOTE: Notecard lines are limited to ~1024 bytes each; wrap long text across multiple lines.
 // NOTE: Do NOT expect large responses in LSL; the server should return short JSON only.
 
@@ -10,14 +10,19 @@ string NPC_ID = "";
 string DISPLAY_NAME = "";
 string MODEL = "gpt-5.2";
 integer MAX_HISTORY_EVENTS = 12;
-string NOTECARD = "system.md";
+string NOTECARD_SYSTEM = "system.md";
+string NOTECARD_FIRST = "first_conversation.md";
 integer DEBUG = TRUE;
 string DEBUG_TAG = "SLQuest Debug: ";
 
 key gNotecardQuery;
 integer gLineIndex = 0;
 string gNotecardText = "";
-key gNotecardKey = NULL_KEY;
+string gSystemText = "";
+string gFirstText = "";
+string gActiveNotecard = "";
+key gSystemNotecardKey = NULL_KEY;
+key gFirstNotecardKey = NULL_KEY;
 integer gLastHttpStatus = 0;
 string gLastHttpBody = "";
 integer gListenHandle = 0;
@@ -113,7 +118,8 @@ string buildPayload()
         "display_name", DISPLAY_NAME,
         "model", MODEL,
         "max_history_events", MAX_HISTORY_EVENTS,
-        "system_prompt", gNotecardText,
+        "system_prompt", gSystemText,
+        "first_conversation_prompt", gFirstText,
         "source", llList2Json(JSON_OBJECT, [
             "object_key", (string)getRootKey(),
             "owner_key", (string)llGetOwner(),
@@ -178,16 +184,33 @@ integer retryWithPrimary(string payload)
     return TRUE;
 }
 
-startNotecardRead()
+integer ensureNotecardExists(string notecardName)
 {
-    if (llGetInventoryType(NOTECARD) != INVENTORY_NOTECARD)
+    if (llGetInventoryType(notecardName) != INVENTORY_NOTECARD)
     {
-        llOwnerSay("Notecard not found: " + NOTECARD);
+        llOwnerSay("Notecard not found: " + notecardName);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+startNotecardReadByName(string notecardName)
+{
+    if (!ensureNotecardExists(notecardName))
+    {
         return;
     }
+    gActiveNotecard = notecardName;
     gNotecardText = "";
     gLineIndex = 0;
-    gNotecardQuery = llGetNotecardLine(NOTECARD, gLineIndex);
+    gNotecardQuery = llGetNotecardLine(notecardName, gLineIndex);
+}
+
+startNotecardRead()
+{
+    gSystemText = "";
+    gFirstText = "";
+    startNotecardReadByName(NOTECARD_SYSTEM);
 }
 
 integer isOwner(key id)
@@ -199,7 +222,8 @@ default
 {
     state_entry()
     {
-        gNotecardKey = llGetInventoryKey(NOTECARD);
+        gSystemNotecardKey = llGetInventoryKey(NOTECARD_SYSTEM);
+        gFirstNotecardKey = llGetInventoryKey(NOTECARD_FIRST);
         gListenHandle = llListen(1, "", llGetOwner(), "");
         debugTrace("state_entry server=" + getServerUrl());
     }
@@ -208,10 +232,12 @@ default
     {
         if (change & CHANGED_INVENTORY)
         {
-            key newKey = llGetInventoryKey(NOTECARD);
-            if (newKey != gNotecardKey)
+            key newSystemKey = llGetInventoryKey(NOTECARD_SYSTEM);
+            key newFirstKey = llGetInventoryKey(NOTECARD_FIRST);
+            if (newSystemKey != gSystemNotecardKey || newFirstKey != gFirstNotecardKey)
             {
-                gNotecardKey = newKey;
+                gSystemNotecardKey = newSystemKey;
+                gFirstNotecardKey = newFirstKey;
                 llOwnerSay("Notecard changed; type /1 update to sync.");
             }
         }
@@ -245,7 +271,8 @@ default
         if (lower == "status" || lower == "statue")
         {
             llOwnerSay("NPC ID: " + getNpcId());
-            llOwnerSay("Notecard: " + NOTECARD);
+            llOwnerSay("System notecard: " + NOTECARD_SYSTEM);
+            llOwnerSay("First conversation notecard: " + NOTECARD_FIRST);
             llOwnerSay("Server URL: " + getServerUrl());
             llOwnerSay("Last HTTP status: " + (string)gLastHttpStatus);
             llOwnerSay("Last HTTP body: " + gLastHttpBody);
@@ -260,6 +287,24 @@ default
         }
         if (data == EOF)
         {
+            if (gActiveNotecard == NOTECARD_SYSTEM)
+            {
+                gSystemText = gNotecardText;
+                if (ensureNotecardExists(NOTECARD_FIRST))
+                {
+                    startNotecardReadByName(NOTECARD_FIRST);
+                    return;
+                }
+                gFirstText = "";
+                sendUpdate();
+                return;
+            }
+            if (gActiveNotecard == NOTECARD_FIRST)
+            {
+                gFirstText = gNotecardText;
+                sendUpdate();
+                return;
+            }
             sendUpdate();
             return;
         }
@@ -269,7 +314,7 @@ default
         }
         gNotecardText += data;
         gLineIndex += 1;
-        gNotecardQuery = llGetNotecardLine(NOTECARD, gLineIndex);
+        gNotecardQuery = llGetNotecardLine(gActiveNotecard, gLineIndex);
     }
 
     http_response(key request_id, integer status, list metadata, string body)
