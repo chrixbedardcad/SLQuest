@@ -40,6 +40,7 @@ PROFILES_ROOT = BASE_DIR / "profiles"
 NPCS_ROOT = BASE_DIR / "npcs"
 NPC_BASE_DIR = NPCS_ROOT / "_base"
 NPC_BASE_SYSTEM_PATH = NPC_BASE_DIR / "system.md"
+NPC_BASE_FIRST_CONVERSATION_PATH = NPC_BASE_DIR / "first_conversation.md"
 NPC_GENERAL_SYSTEM_PATH = NPCS_ROOT / "general_npc.md"
 OPENAI_TRACE_DIR = LOGS_ROOT / "openai_requests"
 SLQUEST_ADMIN_TOKEN = (os.getenv("SLQUEST_ADMIN_TOKEN") or "").strip()
@@ -130,6 +131,10 @@ def npc_profile_dir(npc_id: str) -> Path:
 
 def npc_system_path(npc_id: str) -> Path:
     return npc_profile_dir(npc_id) / "system.md"
+
+
+def npc_first_conversation_path(npc_id: str) -> Path:
+    return npc_profile_dir(npc_id) / "first_conversation.md"
 
 
 def npc_config_path(npc_id: str) -> Path:
@@ -923,6 +928,26 @@ def build_base_instructions(npc_id: str) -> str:
     return "\n\n".join(parts)
 
 
+def build_first_conversation_prompt(
+    npc_id: str, profile_card: dict[str, Any] | None, quest_context: str
+) -> str:
+    base_text = read_text_if_exists(NPC_BASE_FIRST_CONVERSATION_PATH).strip()
+    npc_text = read_text_if_exists(npc_first_conversation_path(npc_id)).strip()
+    parts: list[str] = []
+    if base_text:
+        parts.append(base_text)
+    if npc_text:
+        parts.append(npc_text)
+    personalization = build_personalization_snippet(profile_card)
+    if personalization:
+        parts.append(personalization)
+    if quest_context:
+        parts.append(f"Current quest status:\n{quest_context}")
+    if not parts:
+        return ""
+    return "\n\n".join(parts)
+
+
 def hash_instructions(instructions: str) -> str:
     return hashlib.sha256(instructions.encode("utf-8")).hexdigest()
 
@@ -1171,6 +1196,12 @@ def run_chat_logic(
         instructions_hash = hash_instructions(base_instructions)
         thread_key_value = thread_key(avatar_key, npc_id)
         personalization_fingerprint = profile_fingerprint(profile_card)
+        history_empty = len(load_history(avatar_key, npc_id, last_n=1)) == 0
+        first_turn_prompt = (
+            build_first_conversation_prompt(npc_id, profile_card, quest_context)
+            if history_empty
+            else ""
+        )
         existing_metadata = load_thread_metadata(avatar_key, npc_id)
         update_thread_metadata(
             avatar_key,
@@ -1255,6 +1286,22 @@ def run_chat_logic(
                 npc_id,
                 {"profile_fingerprint": personalization_fingerprint},
             )
+        if conversation_created and first_turn_prompt:
+            log_line(
+                RUN_LOG_PATH,
+                f"conversation_first_turn_prompt request_id={request_id} "
+                f"conversation={conversation_id} avatar={avatar_key or '-'}",
+            )
+            added = add_conversation_developer_item(
+                request_id,
+                conversation_id,
+                first_turn_prompt,
+            )
+            if not added:
+                log_error(
+                    f"conversation_first_turn_prompt_failed request_id={request_id} "
+                    f"avatar={avatar_key}"
+                )
 
         def request_openai(use_thread: bool) -> str:
             request_started = time.perf_counter()
@@ -1268,7 +1315,12 @@ def run_chat_logic(
                     request_payload["conversation"] = conversation_id
                     request_payload["truncation"] = "auto"
                 else:
-                    request_payload["instructions"] = instructions
+                    instructions_for_request = instructions
+                    if first_turn_prompt:
+                        instructions_for_request = (
+                            f"{instructions}\n\n{first_turn_prompt}"
+                        )
+                    request_payload["instructions"] = instructions_for_request
                     history = load_history(avatar_key, npc_id, last_n=max_history)
                     request_payload["input"] = build_messages(history, llm_message)
                 if effective_web:
@@ -1512,6 +1564,8 @@ def admin_npc_upsert() -> tuple[Response, int]:
     admin_token = (data.get("admin_token") or "").strip()
     npc_id = (data.get("npc_id") or "").strip()
     system_prompt = data.get("system_prompt") or ""
+    has_first_conversation_prompt = "first_conversation_prompt" in data
+    first_conversation_prompt = data.get("first_conversation_prompt") or ""
 
     log_incoming_request(
         "/admin/npc/upsert",
@@ -1544,6 +1598,8 @@ def admin_npc_upsert() -> tuple[Response, int]:
 
     if not isinstance(system_prompt, str):
         system_prompt = str(system_prompt)
+    if not isinstance(first_conversation_prompt, str):
+        first_conversation_prompt = str(first_conversation_prompt)
 
     display_name = (data.get("display_name") or "").strip()
     model = (data.get("model") or "").strip()
@@ -1552,6 +1608,10 @@ def admin_npc_upsert() -> tuple[Response, int]:
     profile_dir = npc_profile_dir(npc_id)
     ensure_dir(profile_dir)
     atomic_write_text(npc_system_path(npc_id), system_prompt)
+    if has_first_conversation_prompt:
+        atomic_write_text(
+            npc_first_conversation_path(npc_id), first_conversation_prompt
+        )
 
     existing_config = load_npc_config(npc_id)
     new_config = dict(existing_config)
