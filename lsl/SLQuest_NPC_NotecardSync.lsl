@@ -4,6 +4,7 @@
 // NOTE: Do NOT expect large responses in LSL; the server should return short JSON only.
 
 string SERVER_URL = "http://slquest.duckdns.org:8001";
+string SERVER_URL_FALLBACK = "";
 string ADMIN_TOKEN = "";
 string NPC_ID = "";
 string DISPLAY_NAME = "";
@@ -56,6 +57,37 @@ string getServerUrl()
     return getConfigValue("SERVER_URL", SERVER_URL);
 }
 
+string getServerUrlFallback()
+{
+    return getConfigValue("SERVER_URL_FALLBACK", SERVER_URL_FALLBACK);
+}
+
+integer isRetriableStatus(integer status, string body)
+{
+    if (status == 502 || status == 503 || status == 504)
+    {
+        return TRUE;
+    }
+    if (llSubStringIndex(body, "Unknown Host") != -1)
+    {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+notifyFallbackHint(integer status, string body)
+{
+    if (!isRetriableStatus(status, body))
+    {
+        return;
+    }
+    if (getServerUrlFallback() != "")
+    {
+        return;
+    }
+    llOwnerSay("Server hostname unresolved. Set SERVER_URL_FALLBACK=<url> (IP or alternate domain) in the object description.");
+}
+
 key getRootKey()
 {
     return llGetLinkKey(LINK_ROOT);
@@ -104,6 +136,22 @@ sendUpdate()
         HTTP_BODY_MAXLENGTH, 4096
     ];
     llHTTPRequest(serverUrl + "/admin/npc/upsert", headers, payload);
+}
+
+integer retryWithFallback(string payload)
+{
+    string fallbackUrl = getServerUrlFallback();
+    if (fallbackUrl == "")
+    {
+        return FALSE;
+    }
+    list headers = [
+        HTTP_METHOD, "POST",
+        HTTP_MIMETYPE, "application/json;charset=utf-8",
+        HTTP_BODY_MAXLENGTH, 4096
+    ];
+    llHTTPRequest(fallbackUrl + "/admin/npc/upsert", headers, payload);
+    return TRUE;
 }
 
 startNotecardRead()
@@ -211,7 +259,17 @@ default
         }
         else
         {
+            if (isRetriableStatus(status, body))
+            {
+                string payload = buildPayload();
+                if (retryWithFallback(payload))
+                {
+                    debugTrace("retrying sync with fallback server=" + getServerUrlFallback());
+                    return;
+                }
+            }
             llOwnerSay("NPC sync failed: " + (string)status + " " + body);
+            notifyFallbackHint(status, body);
         }
     }
 }
