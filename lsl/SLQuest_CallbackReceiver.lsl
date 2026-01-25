@@ -127,24 +127,33 @@ string getQueryString(key reqId)
     return "";
 }
 
-list pipeSplit(string s)
+// Avoid list parsing to reduce stack-heap collision risk with large payloads.
+string pipeGetValue(string s, string key)
 {
-    return llParseString2List(s, ["|"], []);
-}
+    string needle = "|" + key + "=";
+    integer pos = llSubStringIndex(s, needle);
 
-string pipeGet(list segs, string ikey)
-{
-    integer i;
-    string prefix = ikey + "=";
-    for (i = 0; i < llGetListLength(segs); ++i)
+    integer start;
+    if (pos == -1)
     {
-        string seg = llList2String(segs, i);
-        if (llSubStringIndex(seg, prefix) == 0)
+        string needle0 = key + "=";
+        if (llSubStringIndex(s, needle0) != 0)
         {
-            return llUnescapeURL(llGetSubString(seg, llStringLength(prefix), -1));
+            return "";
         }
+        start = llStringLength(needle0);
     }
-    return "";
+    else
+    {
+        start = pos + llStringLength(needle);
+    }
+
+    integer endRel = llSubStringIndex(llGetSubString(s, start, -1), "|");
+    if (endRel == -1)
+    {
+        return llUnescapeURL(llGetSubString(s, start, -1));
+    }
+    return llUnescapeURL(llGetSubString(s, start, start + endRel - 1));
 }
 
 string extractCallbackTokenFromBody(string body)
@@ -153,8 +162,7 @@ string extractCallbackTokenFromBody(string body)
     {
         return "";
     }
-    list segs = pipeSplit(body);
-    return pipeGet(segs, "CB");
+    return pipeGetValue(body, "CB");
 }
 
 registerCallback()
@@ -252,6 +260,20 @@ default
                 debugTrace("callback token missing/invalid qs=" + qs);
                 return;
             }
+        }
+        string msgType = pipeGetValue(body, "TYPE");
+        if (msgType == "PKG")
+        {
+            key avatar = (key)pipeGetValue(body, "USER");
+            string reply = pipeGetValue(body, "CHAT");
+            string act = pipeGetValue(body, "ACT");
+            string small = llList2Json(JSON_OBJECT, [
+                "avatar_key", (string)avatar,
+                "reply", reply,
+                "act", act
+            ]);
+            llMessageLinked(LINK_SET, LM_CB_REPLY, small, NULL_KEY);
+            return;
         }
         llMessageLinked(LINK_SET, LM_CB_REPLY, body, NULL_KEY);
     }

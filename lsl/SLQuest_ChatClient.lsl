@@ -26,6 +26,7 @@ integer ASYNC_WAIT_COOLDOWN_SEC = 20;
 integer USE_PUBLIC_SAY = TRUE;
 integer MIN_FREE_MEMORY = 4096;
 integer MAX_REQUEST_MAP_REQUESTS = 30;
+integer MAX_FETCH_MAP = 30;
 
 list gActiveAvatars = [];
 list gSessionEndTimes = [];
@@ -136,24 +137,33 @@ string extractProfileImageKey(string body)
     return llGetSubString(body, startIndex, startIndex + endIndex - 1);
 }
 
-list pipeSplit(string s)
+// Avoid list parsing to reduce stack-heap collision risk with large payloads.
+string pipeGetValue(string s, string key)
 {
-    return llParseString2List(s, ["|"], []);
-}
+    string needle = "|" + key + "=";
+    integer pos = llSubStringIndex(s, needle);
 
-string pipeGet(list segs, string ikey)
-{
-    integer i;
-    string prefix = ikey + "=";
-    for (i = 0; i < llGetListLength(segs); ++i)
+    integer start;
+    if (pos == -1)
     {
-        string seg = llList2String(segs, i);
-        if (llSubStringIndex(seg, prefix) == 0)
+        string needle0 = key + "=";
+        if (llSubStringIndex(s, needle0) != 0)
         {
-            return llUnescapeURL(llGetSubString(seg, llStringLength(prefix), -1));
+            return "";
         }
+        start = llStringLength(needle0);
     }
-    return "";
+    else
+    {
+        start = pos + llStringLength(needle);
+    }
+
+    integer endRel = llSubStringIndex(llGetSubString(s, start, -1), "|");
+    if (endRel == -1)
+    {
+        return llUnescapeURL(llGetSubString(s, start, -1));
+    }
+    return llUnescapeURL(llGetSubString(s, start, start + endRel - 1));
 }
 
 integer nowUnix()
@@ -266,6 +276,16 @@ pruneOldGreets(integer now)
         }
     }
     gGreetMemory = pruned;
+}
+
+addFetchMap(key req, key avatar)
+{
+    integer pairs = llGetListLength(gFetchMap) / 2;
+    if (pairs >= MAX_FETCH_MAP)
+    {
+        gFetchMap = llDeleteSubList(gFetchMap, 0, 1);
+    }
+    gFetchMap += [req, avatar];
 }
 
 resetSession()
@@ -387,17 +407,8 @@ retryQueuedAfterCallbackRefresh()
     }
 }
 
-handlePipePackage(string body)
+handlePackageResult(key avatar, string chat, string act)
 {
-    list segs = pipeSplit(body);
-    string msgType = pipeGet(segs, "TYPE");
-    if (msgType != "PKG")
-    {
-        return;
-    }
-    key avatar = (key)pipeGet(segs, "USER");
-    string chat = pipeGet(segs, "CHAT");
-    string act = pipeGet(segs, "ACT");
     if (avatar == NULL_KEY)
     {
         return;
@@ -427,6 +438,23 @@ handlePipePackage(string body)
         clearQueuedMessage(avatar);
         sendMessage(avatar, queued);
     }
+}
+
+handlePipePackage(string body)
+{
+    if (!ensureMemory("handlePipePackage"))
+    {
+        return;
+    }
+    string msgType = pipeGetValue(body, "TYPE");
+    if (msgType != "PKG")
+    {
+        return;
+    }
+    key avatar = (key)pipeGetValue(body, "USER");
+    string chat = pipeGetValue(body, "CHAT");
+    string act = pipeGetValue(body, "ACT");
+    handlePackageResult(avatar, chat, act);
 }
 
 string buildPayload(key avatar, string message, string clientReqId)
@@ -668,6 +696,10 @@ default
 
     http_response(key request_id, integer status, list metadata, string body)
     {
+        if (!ensureMemory("http_response"))
+        {
+            return;
+        }
         if (request_id == gProfileRequest)
         {
             gProfileRequest = NULL_KEY;
@@ -805,13 +837,15 @@ default
 
         if (DEBUG)
         {
-            string debugBody = body;
-            integer bodyLength = llStringLength(debugBody);
+            integer bodyLength = llStringLength(body);
             if (bodyLength > 300)
             {
-                debugBody = llGetSubString(debugBody, 0, 299) + "...";
+                llOwnerSay(llGetSubString(body, 0, 299) + "...");
             }
-            llOwnerSay(debugBody);
+            else
+            {
+                llOwnerSay(body);
+            }
         }
 
         integer inflightIndex = llListFindList(gInFlightAvatars, [activeAvatar]);
@@ -872,41 +906,20 @@ default
         {
             key avatar = (key)llJsonGetValue(str, ["avatar_key"]);
             string reply = llJsonGetValue(str, ["reply"]);
-            if (avatar == NULL_KEY || reply == "")
-            {
-                return;
-            }
-            integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
-            if (inflightIndex != -1)
-            {
-                gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
-            }
-            clearPending(avatar);
-            if (!isActive(avatar))
-            {
-                return;
-            }
-            updateDebugTexture(avatar);
-            sayTo(avatar, reply);
-            string queued = getQueuedMessage(avatar);
-            if (queued != "")
-            {
-                clearQueuedMessage(avatar);
-                sendMessage(avatar, queued);
-            }
+            string act = llJsonGetValue(str, ["act"]);
+            handlePackageResult(avatar, reply, act);
             return;
         }
-        list segs = pipeSplit(str);
-        string msgType = pipeGet(segs, "TYPE");
+        string msgType = pipeGetValue(str, "TYPE");
         if (msgType == "FETCH")
         {
-            key avatar = (key)pipeGet(segs, "USER");
-            string token = pipeGet(segs, "TOKEN");
+            key avatar = (key)pipeGetValue(str, "USER");
+            string token = pipeGetValue(str, "TOKEN");
             if (avatar != NULL_KEY && token != "")
             {
                 string url = getServerBase() + "/sl/fetch?token=" + llEscapeURL(token);
                 key req = llHTTPRequest(url, [HTTP_METHOD, "GET", HTTP_BODY_MAXLENGTH, FETCH_MAX], "");
-                gFetchMap += [req, avatar];
+                addFetchMap(req, avatar);
             }
             return;
         }
