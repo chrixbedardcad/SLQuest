@@ -454,7 +454,7 @@ sendMessage(key avatar, string message)
         markPending(avatar, nowUnix());
     }
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync, payload, serverBase, 0];
+    gRequestMap += [requestId, avatar, isAsync, message, serverBase, 0];
 }
 
 integer isRetriableStatus(integer status, string body)
@@ -470,7 +470,7 @@ integer isRetriableStatus(integer status, string body)
     return FALSE;
 }
 
-integer retryWithFallback(key avatar, string payload, integer isAsync, integer attempt)
+integer retryWithFallback(key avatar, string message, integer isAsync, integer attempt)
 {
     if (attempt > 0)
     {
@@ -487,12 +487,14 @@ integer retryWithFallback(key avatar, string payload, integer isAsync, integer a
         url = fallbackBase + "/chat_async";
     }
     debugTrace("retrying with fallback server=" + fallbackBase + " async=" + (string)isAsync);
+    string clientReqId = (string)llGenerateKey();
+    string payload = buildPayload(avatar, message, clientReqId);
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync, payload, fallbackBase, attempt + 1];
+    gRequestMap += [requestId, avatar, isAsync, message, fallbackBase, attempt + 1];
     return TRUE;
 }
 
-integer retryWithPrimary(string serverBase, key avatar, string payload, integer isAsync, integer attempt)
+integer retryWithPrimary(string serverBase, key avatar, string message, integer isAsync, integer attempt)
 {
     if (attempt > 0)
     {
@@ -508,8 +510,10 @@ integer retryWithPrimary(string serverBase, key avatar, string payload, integer 
         url = serverBase + "/chat_async";
     }
     debugTrace("retrying with primary server=" + serverBase + " async=" + (string)isAsync);
+    string clientReqId = (string)llGenerateKey();
+    string payload = buildPayload(avatar, message, clientReqId);
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync, payload, serverBase, attempt + 1];
+    gRequestMap += [requestId, avatar, isAsync, message, serverBase, attempt + 1];
     return TRUE;
 }
 
@@ -676,7 +680,7 @@ default
         }
         key activeAvatar = llList2Key(gRequestMap, requestIndex + 1);
         integer isAsync = llList2Integer(gRequestMap, requestIndex + 2);
-        string payload = llList2String(gRequestMap, requestIndex + 3);
+        string message = llList2String(gRequestMap, requestIndex + 3);
         string serverBase = llList2String(gRequestMap, requestIndex + 4);
         integer attempt = llList2Integer(gRequestMap, requestIndex + 5);
         debugTrace("response status=" + (string)status + " async=" + (string)isAsync);
@@ -688,11 +692,11 @@ default
 
         if (status != 200 && isRetriableStatus(status, body))
         {
-            if (retryWithFallback(activeAvatar, payload, isAsync, attempt))
+            if (retryWithFallback(activeAvatar, message, isAsync, attempt))
             {
                 return;
             }
-            if (retryWithPrimary(serverBase, activeAvatar, payload, isAsync, attempt))
+            if (retryWithPrimary(serverBase, activeAvatar, message, isAsync, attempt))
             {
                 return;
             }
@@ -713,10 +717,9 @@ default
                     string errorCode = llJsonGetValue(body, ["error"]);
                     if (errorCode == "callback_not_registered")
                     {
-                        string failedMessage = llJsonGetValue(payload, ["message"]);
-                        if (failedMessage != JSON_INVALID && failedMessage != "")
+                        if (message != "")
                         {
-                            setQueuedMessage(activeAvatar, failedMessage);
+                            setQueuedMessage(activeAvatar, message);
                         }
                         gCallbackToken = "";
                         llMessageLinked(LINK_SET, LM_CB_REFRESH, "", NULL_KEY);
