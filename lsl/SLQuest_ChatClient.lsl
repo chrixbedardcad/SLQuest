@@ -24,6 +24,8 @@ integer ASYNC_ONLY = TRUE;
 integer ASYNC_WAIT_NOTICE_SEC = 8;
 integer ASYNC_WAIT_COOLDOWN_SEC = 20;
 integer USE_PUBLIC_SAY = TRUE;
+integer MIN_FREE_MEMORY = 4096;
+integer MAX_REQUEST_MAP_REQUESTS = 30;
 
 list gActiveAvatars = [];
 list gSessionEndTimes = [];
@@ -157,6 +159,30 @@ string pipeGet(list segs, string ikey)
 integer nowUnix()
 {
     return llGetUnixTime();
+}
+
+integer ensureMemory(string context)
+{
+    integer freeMemory = llGetFreeMemory();
+    if (freeMemory >= MIN_FREE_MEMORY)
+    {
+        return TRUE;
+    }
+    llOwnerSay("Low memory (" + (string)freeMemory + ") during " + context + ". Resetting sessions.");
+    resetSession();
+    return FALSE;
+}
+
+integer ensureRequestCapacity()
+{
+    integer requestCount = llGetListLength(gRequestMap) / 6;
+    if (requestCount <= MAX_REQUEST_MAP_REQUESTS)
+    {
+        return TRUE;
+    }
+    llOwnerSay("Request backlog exceeded; resetting sessions.");
+    resetSession();
+    return FALSE;
 }
 
 integer computeNextHintDelay()
@@ -424,6 +450,16 @@ string buildPayload(key avatar, string message, string clientReqId)
 
 sendMessage(key avatar, string message)
 {
+    if (!ensureMemory("sendMessage"))
+    {
+        sayTo(avatar, "Sorry, I'm restarting due to low memory. Try again in a moment.");
+        return;
+    }
+    if (!ensureRequestCapacity())
+    {
+        sayTo(avatar, "Sorry, I'm busy. Try again in a moment.");
+        return;
+    }
     string clientReqId = (string)llGenerateKey();
     string payload = buildPayload(avatar, message, clientReqId);
     string serverBase = getServerBase();
@@ -594,6 +630,11 @@ default
     touch_start(integer total_number)
     {
         key toucher = llDetectedKey(0);
+        if (!ensureMemory("touch_start"))
+        {
+            sayTo(toucher, "Sorry, I'm restarting due to low memory. Try again in a moment.");
+            return;
+        }
         if (isActive(toucher))
         {
             endSession(toucher, "Session ended. Touch me again to talk.");
