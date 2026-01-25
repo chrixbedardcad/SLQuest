@@ -128,15 +128,15 @@ string getQueryString(key reqId)
 }
 
 // Avoid list parsing to reduce stack-heap collision risk with large payloads.
-string pipeGetValue(string s, string key)
+string pipeGetValue(string s, string key_name)
 {
-    string needle = "|" + key + "=";
+    string needle = "|" + key_name + "=";
     integer pos = llSubStringIndex(s, needle);
 
     integer start;
     if (pos == -1)
     {
-        string needle0 = key + "=";
+        string needle0 = key_name + "=";
         if (llSubStringIndex(s, needle0) != 0)
         {
             return "";
