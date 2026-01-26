@@ -27,6 +27,9 @@ integer USE_PUBLIC_SAY = TRUE;
 integer MIN_FREE_MEMORY = 4096;
 integer MAX_REQUEST_MAP_REQUESTS = 30;
 integer MAX_FETCH_MAP = 30;
+integer HTTP_REQUEST_TIMEOUT_SEC = 90;
+integer PRUNE_INTERVAL_SEC = 30;
+integer gLastPruneTime = 0;
 
 list gActiveAvatars = [];
 list gSessionEndTimes = [];
@@ -185,7 +188,7 @@ integer ensureMemory(string context)
 
 integer ensureRequestCapacity()
 {
-    integer requestCount = llGetListLength(gRequestMap) / 6;
+    integer requestCount = llGetListLength(gRequestMap) / 7;
     if (requestCount <= MAX_REQUEST_MAP_REQUESTS)
     {
         return TRUE;
@@ -278,14 +281,79 @@ pruneOldGreets(integer now)
     gGreetMemory = pruned;
 }
 
+pruneStaleRequests(integer now)
+{
+    integer count = llGetListLength(gRequestMap);
+    integer index;
+    list kept = [];
+    for (index = 0; index < count; index += 7)
+    {
+        integer timestamp = llList2Integer(gRequestMap, index + 6);
+        if ((now - timestamp) < HTTP_REQUEST_TIMEOUT_SEC)
+        {
+            kept += llList2List(gRequestMap, index, index + 6);
+        }
+        else
+        {
+            key avatar = llList2Key(gRequestMap, index + 1);
+            debugTrace("Pruning stale request for avatar=" + (string)avatar);
+            integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
+            if (inflightIndex != -1)
+            {
+                gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+            }
+            clearPending(avatar);
+        }
+    }
+    gRequestMap = kept;
+}
+
+pruneStaleFetches(integer now)
+{
+    integer count = llGetListLength(gFetchMap);
+    integer index;
+    list kept = [];
+    for (index = 0; index < count; index += 3)
+    {
+        integer timestamp = llList2Integer(gFetchMap, index + 2);
+        if ((now - timestamp) < HTTP_REQUEST_TIMEOUT_SEC)
+        {
+            kept += llList2List(gFetchMap, index, index + 2);
+        }
+        else
+        {
+            key avatar = llList2Key(gFetchMap, index + 1);
+            debugTrace("Pruning stale fetch for avatar=" + (string)avatar);
+            integer inflightIndex = llListFindList(gInFlightAvatars, [avatar]);
+            if (inflightIndex != -1)
+            {
+                gInFlightAvatars = llDeleteSubList(gInFlightAvatars, inflightIndex, inflightIndex);
+            }
+        }
+    }
+    gFetchMap = kept;
+}
+
+pruneAllStale(integer now)
+{
+    if ((now - gLastPruneTime) < PRUNE_INTERVAL_SEC)
+    {
+        return;
+    }
+    gLastPruneTime = now;
+    pruneOldGreets(now);
+    pruneStaleRequests(now);
+    pruneStaleFetches(now);
+}
+
 addFetchMap(key req, key avatar)
 {
-    integer pairs = llGetListLength(gFetchMap) / 2;
-    if (pairs >= MAX_FETCH_MAP)
+    integer entries = llGetListLength(gFetchMap) / 3;
+    if (entries >= MAX_FETCH_MAP)
     {
-        gFetchMap = llDeleteSubList(gFetchMap, 0, 1);
+        gFetchMap = llDeleteSubList(gFetchMap, 0, 2);
     }
-    gFetchMap += [req, avatar];
+    gFetchMap += [req, avatar, nowUnix()];
 }
 
 resetSession()
@@ -518,7 +586,7 @@ sendMessage(key avatar, string message)
         markPending(avatar, nowUnix());
     }
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync, message, serverBase, 0];
+    gRequestMap += [requestId, avatar, isAsync, message, serverBase, 0, nowUnix()];
 }
 
 integer isRetriableStatus(integer status, string body)
@@ -554,7 +622,7 @@ integer retryWithFallback(key avatar, string message, integer isAsync, integer a
     string clientReqId = (string)llGenerateKey();
     string payload = buildPayload(avatar, message, clientReqId);
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync, message, fallbackBase, attempt + 1];
+    gRequestMap += [requestId, avatar, isAsync, message, fallbackBase, attempt + 1, nowUnix()];
     return TRUE;
 }
 
@@ -577,7 +645,7 @@ integer retryWithPrimary(string serverBase, key avatar, string message, integer 
     string clientReqId = (string)llGenerateKey();
     string payload = buildPayload(avatar, message, clientReqId);
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync, message, serverBase, attempt + 1];
+    gRequestMap += [requestId, avatar, isAsync, message, serverBase, attempt + 1, nowUnix()];
     return TRUE;
 }
 
@@ -721,7 +789,7 @@ default
         if (fetchIndex != -1)
         {
             key avatar = llList2Key(gFetchMap, fetchIndex + 1);
-            gFetchMap = llDeleteSubList(gFetchMap, fetchIndex, fetchIndex + 1);
+            gFetchMap = llDeleteSubList(gFetchMap, fetchIndex, fetchIndex + 2);
             if (status == 200)
             {
                 handlePipePackage(body);
@@ -761,7 +829,7 @@ default
         {
             debugTrace("sync response status=" + (string)status + " body=" + (string)llStringLength(body));
         }
-        gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 5);
+        gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 6);
 
         if (status != 200 && isRetriableStatus(status, body))
         {
@@ -951,6 +1019,7 @@ default
     timer()
     {
         integer now = nowUnix();
+        pruneAllStale(now);
         integer count = llGetListLength(gActiveAvatars);
         integer index;
         for (index = count - 1; index >= 0; --index)
@@ -1008,7 +1077,6 @@ default
         {
             return;
         }
-        pruneOldGreets(now);
         integer index;
         for (index = 0; index < total_number; ++index)
         {
