@@ -1,5 +1,4 @@
 string SERVER_BASE = "http://slquest.duckdns.org:8001";
-string SERVER_BASE_FALLBACK = "";
 string NPC_ID = "";
 string PROFILE_PAGE_BASE = "https://world.secondlife.com/resident/";
 // NOTE: Place SLQuest_CallbackReceiver.lsl in the same linkset so callbacks can be routed.
@@ -7,13 +6,7 @@ integer SESSION_TIMEOUT_SEC = 90;
 integer IDLE_HINT_COOLDOWN_SEC = 45;
 integer DEBUG = TRUE;
 integer DEBUG_PROFILE_FACE = ALL_SIDES;
-integer GREET_ENABLED = FALSE;
-float GREET_RANGE = 12.0;
-float GREET_INTERVAL = 10.0;
 integer ALLOW_WEB_SEARCH = TRUE;
-integer GREET_COOLDOWN_PER_AVATAR_SEC = 300;
-integer GREET_GLOBAL_COOLDOWN_SEC = 20;
-integer GREET_SKIP_OWNER = TRUE;
 integer LM_CB_TOKEN = 9100;
 integer LM_CB_REPLY = 9101;
 integer LM_CB_REFRESH = 9102;
@@ -24,9 +17,9 @@ integer ASYNC_ONLY = TRUE;
 integer ASYNC_WAIT_NOTICE_SEC = 8;
 integer ASYNC_WAIT_COOLDOWN_SEC = 20;
 integer USE_PUBLIC_SAY = TRUE;
-integer MIN_FREE_MEMORY = 4096;
-integer MAX_REQUEST_MAP_REQUESTS = 30;
-integer MAX_FETCH_MAP = 30;
+integer MIN_FREE_MEMORY = 6000;
+integer MAX_REQUEST_MAP_REQUESTS = 10;
+integer MAX_FETCH_MAP = 10;
 integer HTTP_REQUEST_TIMEOUT_SEC = 90;
 integer PRUNE_INTERVAL_SEC = 30;
 integer gLastPruneTime = 0;
@@ -42,8 +35,6 @@ list gPendingStartTimes = [];
 list gPendingLastNotice = [];
 integer gListen = -1;
 integer gNextHintTime = 0;
-integer gNextGlobalGreetAt = 0;
-list gGreetMemory = [];
 key gProfileRequest = NULL_KEY;
 key gProfileAvatar = NULL_KEY;
 integer gProfileClearAt = 0;
@@ -87,11 +78,6 @@ string getConfigValue(string variable_key_name, string fallback)
 string getServerBase()
 {
     return getConfigValue("SERVER_BASE", SERVER_BASE);
-}
-
-string getServerBaseFallback()
-{
-    return getConfigValue("SERVER_BASE_FALLBACK", SERVER_BASE_FALLBACK);
 }
 
 integer usePublicSay()
@@ -188,7 +174,7 @@ integer ensureMemory(string context)
 
 integer ensureRequestCapacity()
 {
-    integer requestCount = llGetListLength(gRequestMap) / 7;
+    integer requestCount = llGetListLength(gRequestMap) / 4;
     if (requestCount <= MAX_REQUEST_MAP_REQUESTS)
     {
         return TRUE;
@@ -234,64 +220,17 @@ updateDebugTexture(key avatar)
     );
 }
 
-integer findGreetIndex(key avatar)
-{
-    return llListFindList(gGreetMemory, [avatar]);
-}
-
-integer canGreet(key avatar, integer now)
-{
-    integer index = findGreetIndex(avatar);
-    if (index == -1)
-    {
-        return TRUE;
-    }
-    integer lastGreeted = llList2Integer(gGreetMemory, index + 1);
-    if ((now - lastGreeted) >= GREET_COOLDOWN_PER_AVATAR_SEC)
-    {
-        return TRUE;
-    }
-    return FALSE;
-}
-
-markGreeted(key avatar, integer now)
-{
-    integer index = findGreetIndex(avatar);
-    if (index == -1)
-    {
-        gGreetMemory += [avatar, now];
-        return;
-    }
-    gGreetMemory = llListReplaceList(gGreetMemory, [avatar, now], index, index + 1);
-}
-
-pruneOldGreets(integer now)
-{
-    integer count = llGetListLength(gGreetMemory);
-    integer index;
-    list pruned = [];
-    for (index = 0; index < count; index += 2)
-    {
-        integer lastGreeted = llList2Integer(gGreetMemory, index + 1);
-        if ((now - lastGreeted) < GREET_COOLDOWN_PER_AVATAR_SEC)
-        {
-            pruned += [llList2Key(gGreetMemory, index), lastGreeted];
-        }
-    }
-    gGreetMemory = pruned;
-}
-
 pruneStaleRequests(integer now)
 {
     integer count = llGetListLength(gRequestMap);
     integer index;
     list kept = [];
-    for (index = 0; index < count; index += 7)
+    for (index = 0; index < count; index += 4)
     {
-        integer timestamp = llList2Integer(gRequestMap, index + 6);
+        integer timestamp = llList2Integer(gRequestMap, index + 3);
         if ((now - timestamp) < HTTP_REQUEST_TIMEOUT_SEC)
         {
-            kept += llList2List(gRequestMap, index, index + 6);
+            kept += llList2List(gRequestMap, index, index + 3);
         }
         else
         {
@@ -341,7 +280,6 @@ pruneAllStale(integer now)
         return;
     }
     gLastPruneTime = now;
-    pruneOldGreets(now);
     pruneStaleRequests(now);
     pruneStaleFetches(now);
 }
@@ -586,81 +524,9 @@ sendMessage(key avatar, string message)
         markPending(avatar, nowUnix());
     }
     key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync, message, serverBase, 0, nowUnix()];
+    gRequestMap += [requestId, avatar, isAsync, nowUnix()];
 }
 
-integer isRetriableStatus(integer status, string body)
-{
-    if (status == 502 || status == 503 || status == 504)
-    {
-        return TRUE;
-    }
-    if (llSubStringIndex(body, "Unknown Host") != -1)
-    {
-        return TRUE;
-    }
-    return FALSE;
-}
-
-integer retryWithFallback(key avatar, string message, integer isAsync, integer attempt)
-{
-    if (attempt > 0)
-    {
-        return FALSE;
-    }
-    string fallbackBase = getServerBaseFallback();
-    if (fallbackBase == "")
-    {
-        return FALSE;
-    }
-    string url = fallbackBase + "/chat";
-    if (isAsync)
-    {
-        url = fallbackBase + "/chat_async";
-    }
-    debugTrace("retrying with fallback server=" + fallbackBase + " async=" + (string)isAsync);
-    string clientReqId = (string)llGenerateKey();
-    string payload = buildPayload(avatar, message, clientReqId);
-    key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync, message, fallbackBase, attempt + 1, nowUnix()];
-    return TRUE;
-}
-
-integer retryWithPrimary(string serverBase, key avatar, string message, integer isAsync, integer attempt)
-{
-    if (attempt > 0)
-    {
-        return FALSE;
-    }
-    if (serverBase == "")
-    {
-        return FALSE;
-    }
-    string url = serverBase + "/chat";
-    if (isAsync)
-    {
-        url = serverBase + "/chat_async";
-    }
-    debugTrace("retrying with primary server=" + serverBase + " async=" + (string)isAsync);
-    string clientReqId = (string)llGenerateKey();
-    string payload = buildPayload(avatar, message, clientReqId);
-    key requestId = llHTTPRequest(url, [HTTP_METHOD, "POST", HTTP_MIMETYPE, "application/json"], payload);
-    gRequestMap += [requestId, avatar, isAsync, message, serverBase, attempt + 1, nowUnix()];
-    return TRUE;
-}
-
-notifyFallbackHint(integer status, string body)
-{
-    if (!isRetriableStatus(status, body))
-    {
-        return;
-    }
-    if (getServerBaseFallback() != "")
-    {
-        return;
-    }
-    llOwnerSay("Server hostname unresolved. Set SERVER_BASE_FALLBACK=<url> (IP or alternate domain) in the object description.");
-}
 
 ensureListen()
 {
@@ -717,10 +583,6 @@ default
     {
         resetSession();
         llSetTimerEvent(1.0);
-        if (GREET_ENABLED)
-        {
-            llSensorRepeat("", NULL_KEY, AGENT, GREET_RANGE, PI, GREET_INTERVAL);
-        }
     }
 
     touch_start(integer total_number)
@@ -821,29 +683,13 @@ default
         }
         key activeAvatar = llList2Key(gRequestMap, requestIndex + 1);
         integer isAsync = llList2Integer(gRequestMap, requestIndex + 2);
-        string message = llList2String(gRequestMap, requestIndex + 3);
-        string serverBase = llList2String(gRequestMap, requestIndex + 4);
-        integer attempt = llList2Integer(gRequestMap, requestIndex + 5);
         debugTrace("response status=" + (string)status + " async=" + (string)isAsync);
         if (isAsync)
         {
-            debugTrace("sync response status=" + (string)status + " body=" + (string)llStringLength(body));
+            debugTrace("async response status=" + (string)status + " body=" + (string)llStringLength(body));
         }
-        gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 6);
+        gRequestMap = llDeleteSubList(gRequestMap, requestIndex, requestIndex + 3);
 
-        if (status != 200 && isRetriableStatus(status, body))
-        {
-            if (retryWithFallback(activeAvatar, message, isAsync, attempt))
-            {
-                return;
-            }
-            if (retryWithPrimary(serverBase, activeAvatar, message, isAsync, attempt))
-            {
-                return;
-            }
-            debugTrace("fallback unavailable or already used for server=" + serverBase);
-            notifyFallbackHint(status, body);
-        }
         if (!isActive(activeAvatar))
         {
             return;
@@ -858,10 +704,6 @@ default
                     string errorCode = llJsonGetValue(body, ["error"]);
                     if (errorCode == "callback_not_registered")
                     {
-                        if (message != "")
-                        {
-                            setQueuedMessage(activeAvatar, message);
-                        }
                         gCallbackToken = "";
                         llMessageLinked(LINK_SET, LM_CB_REFRESH, "", NULL_KEY);
                         if (isActive(activeAvatar))
@@ -1063,31 +905,6 @@ default
         {
             llSay(0, "Touch me if you want to talk.");
             scheduleNextHint();
-        }
-    }
-
-    sensor(integer total_number)
-    {
-        if (llGetListLength(gActiveAvatars) > 0)
-        {
-            return;
-        }
-        integer now = nowUnix();
-        if (now < gNextGlobalGreetAt)
-        {
-            return;
-        }
-        integer index;
-        for (index = 0; index < total_number; ++index)
-        {
-            key avatar = llDetectedKey(index);
-            if (!(GREET_SKIP_OWNER && avatar == llGetOwner()) && canGreet(avatar, now))
-            {
-                llSay(0, "Hi " + llDetectedName(index) + ", touch me if you want to talk!");
-                markGreeted(avatar, now);
-                gNextGlobalGreetAt = now + GREET_GLOBAL_COOLDOWN_SEC;
-                return;
-            }
         }
     }
 

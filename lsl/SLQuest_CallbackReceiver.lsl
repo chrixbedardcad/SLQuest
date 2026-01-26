@@ -6,11 +6,25 @@ integer LM_CB_REPLY = 9101;
 integer DEBUG = TRUE;
 string DEBUG_TAG = "SLQuest Debug: ";
 
+// Greeting configuration
+integer GREET_ENABLED = FALSE;
+float GREET_RANGE = 12.0;
+float GREET_INTERVAL = 10.0;
+integer GREET_COOLDOWN_PER_AVATAR_SEC = 300;
+integer GREET_GLOBAL_COOLDOWN_SEC = 20;
+integer GREET_SKIP_OWNER = TRUE;
+integer GREET_PRUNE_INTERVAL_SEC = 60;
+
 string gCallbackURL = "";
 string gCallbackToken = "";
 key gRegisterReq = NULL_KEY;
 integer LM_CB_REFRESH = 9102;
 integer gRequestInFlight = FALSE;
+
+// Greeting state
+integer gNextGlobalGreetAt = 0;
+list gGreetMemory = [];
+integer gLastGreetPruneTime = 0;
 
 debugTrace(string message)
 {
@@ -165,6 +179,63 @@ string extractCallbackTokenFromBody(string body)
     return pipeGetValue(body, "CB");
 }
 
+integer nowUnix()
+{
+    return llGetUnixTime();
+}
+
+integer findGreetIndex(key avatar)
+{
+    return llListFindList(gGreetMemory, [avatar]);
+}
+
+integer canGreet(key avatar, integer now)
+{
+    integer index = findGreetIndex(avatar);
+    if (index == -1)
+    {
+        return TRUE;
+    }
+    integer lastGreeted = llList2Integer(gGreetMemory, index + 1);
+    if ((now - lastGreeted) >= GREET_COOLDOWN_PER_AVATAR_SEC)
+    {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+markGreeted(key avatar, integer now)
+{
+    integer index = findGreetIndex(avatar);
+    if (index == -1)
+    {
+        gGreetMemory += [avatar, now];
+        return;
+    }
+    gGreetMemory = llListReplaceList(gGreetMemory, [avatar, now], index, index + 1);
+}
+
+pruneOldGreets(integer now)
+{
+    if ((now - gLastGreetPruneTime) < GREET_PRUNE_INTERVAL_SEC)
+    {
+        return;
+    }
+    gLastGreetPruneTime = now;
+    integer count = llGetListLength(gGreetMemory);
+    integer index;
+    list pruned = [];
+    for (index = 0; index < count; index += 2)
+    {
+        integer lastGreeted = llList2Integer(gGreetMemory, index + 1);
+        if ((now - lastGreeted) < GREET_COOLDOWN_PER_AVATAR_SEC)
+        {
+            pruned += [llList2Key(gGreetMemory, index), lastGreeted];
+        }
+    }
+    gGreetMemory = pruned;
+}
+
 registerCallback()
 {
     string serverBase = getServerBase();
@@ -213,6 +284,11 @@ default
             return;
         }
         requestCallbackURL();
+        if (GREET_ENABLED)
+        {
+            llSensorRepeat("", NULL_KEY, AGENT, GREET_RANGE, PI, GREET_INTERVAL);
+            llSetTimerEvent(GREET_PRUNE_INTERVAL_SEC);
+        }
     }
 
     http_request(key id, string method, string body)
@@ -344,6 +420,39 @@ default
     on_rez(integer start_param)
     {
         llResetScript();
+    }
+
+    timer()
+    {
+        if (GREET_ENABLED)
+        {
+            pruneOldGreets(nowUnix());
+        }
+    }
+
+    sensor(integer total_number)
+    {
+        if (!GREET_ENABLED)
+        {
+            return;
+        }
+        integer now = nowUnix();
+        if (now < gNextGlobalGreetAt)
+        {
+            return;
+        }
+        integer index;
+        for (index = 0; index < total_number; ++index)
+        {
+            key avatar = llDetectedKey(index);
+            if (!(GREET_SKIP_OWNER && avatar == llGetOwner()) && canGreet(avatar, now))
+            {
+                llSay(0, "Hi " + llDetectedName(index) + ", touch me if you want to talk!");
+                markGreeted(avatar, now);
+                gNextGlobalGreetAt = now + GREET_GLOBAL_COOLDOWN_SEC;
+                return;
+            }
+        }
     }
 
     changed(integer change)
