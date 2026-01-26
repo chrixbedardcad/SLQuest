@@ -2634,11 +2634,11 @@ def chat_async() -> tuple[Response, int]:
                 if selected_gift:
                     actions[i] = f"Give:{selected_gift}"
                     record_gift_given(avatar_uuid, selected_gift)
-                    log_event(f"gift_selected avatar={avatar_uuid} gift={selected_gift}")
+                    log_line(RUN_LOG_PATH, f"gift_selected avatar={avatar_uuid} gift={selected_gift}")
                 else:
                     # No gifts available, remove the action
                     actions[i] = ""
-                    log_event(f"gift_none_available avatar={avatar_uuid} npc={npc_name}")
+                    log_line(RUN_LOG_PATH, f"gift_none_available avatar={avatar_uuid} npc={npc_name}")
 
         # Filter out empty actions
         actions = [a for a in actions if a]
