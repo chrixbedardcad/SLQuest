@@ -1,0 +1,40 @@
+{
+  "objects": {
+    "green_cube": {
+      "object_id": "green_cube",
+      "object_key": "0a3cad31-c11a-673a-48bc-5e0eccb794e8",
+      "object_name": "Green Cube",
+      "region": "SLEA9",
+      "position": "<124,204,4001>",
+      "difficulty": 1,
+      "hint": "Look near the fountain",
+      "found_message": "You found the green cube!",
+      "category": "hidden",
+      "last_seen": "2026-01-26T16:21:43+00:00"
+    },
+    "red_cube": {
+      "object_id": "red_cube",
+      "object_key": "63cc82fb-09aa-73b0-3e67-5a74746fb86b",
+      "object_name": "Red Cube",
+      "region": "SLEA9",
+      "position": "<124,204,4001>",
+      "difficulty": 1,
+      "hint": "Look near me",
+      "found_message": "You found the red cube!",
+      "category": "hidden",
+      "last_seen": "2026-01-26T16:21:46+00:00"
+    },
+    "blue_cube": {
+      "object_id": "blue_cube",
+      "object_key": "e7d90b68-d1cf-a4bd-ddc0-1c2903d88679",
+      "object_name": "Blue Cube",
+      "region": "SLEA9",
+      "position": "<124,203,4001>",
+      "difficulty": 1,
+      "hint": "Look near me",
+      "found_message": "You found the blue cube!",
+      "category": "hidden",
+      "last_seen": "2026-01-26T16:21:51+00:00"
+    }
+  }
+}

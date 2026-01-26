@@ -1,7 +1,7 @@
 // SLQuest_QuestObject.lsl - Generic quest object script
 // Reads config from quest_config notecard, registers with shared pool, sends events on touch
 
-string SERVER_BASE = "http://slquest.duckdns.org:8001";
+string SERVER_BASE = "https://delaware-caroline-pointing-dana.trycloudflare.com";
 string NOTECARD_NAME = "quest_config";
 float HEARTBEAT_INTERVAL = 300.0;  // 5 minutes
 

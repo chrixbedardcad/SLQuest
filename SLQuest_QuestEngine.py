@@ -223,6 +223,7 @@ def generate_quest(
     for obj in selected:
         objectives.append({
             "object_id": obj.get("object_id"),
+            "object_name": obj.get("object_name", obj.get("object_id", "")),
             "hint": obj.get("hint", ""),
             "found": False,
             "found_at": None,
@@ -351,12 +352,15 @@ def build_quest_context(avatar_key: str) -> str:
     status = current.get("status", "active")
     reward_given = current.get("reward_given", False)
 
-    # Find next hint (first unfound objective)
-    next_hint = ""
+    # Find unfound objectives
+    unfound_objects = []
     for obj in objectives:
         if not obj.get("found"):
-            next_hint = obj.get("hint", "")
-            break
+            unfound_objects.append({
+                "object_id": obj.get("object_id", ""),
+                "object_name": obj.get("object_name", obj.get("object_id", "")),
+                "hint": obj.get("hint", ""),
+            })
 
     lines = [
         "QUEST_STATUS:",
@@ -366,8 +370,13 @@ def build_quest_context(avatar_key: str) -> str:
         f"found={found_count}/{total_count}",
     ]
 
-    if next_hint and status == "active":
-        lines.append(f"next_hint={next_hint}")
+    # List unfound objects so NPC knows what to tell player
+    if unfound_objects and status == "active":
+        for i, obj in enumerate(unfound_objects):
+            obj_id = obj.get("object_id", "unknown")
+            obj_name = obj.get("object_name", obj_id)
+            hint = obj.get("hint", "")
+            lines.append(f"objective_{i+1}={obj_id} name=\"{obj_name}\" hint=\"{hint}\"")
 
     if reward_given:
         lines.append("reward_given=true")
@@ -378,7 +387,8 @@ def build_quest_context(avatar_key: str) -> str:
     if status == "active":
         lines.extend([
             "- Quest is active, player is searching for objects",
-            "- Give hints for unfound objects, encourage exploration",
+            "- Tell player to find the object using the 'name' field (e.g., 'find the Green Cube')",
+            "- Use the hints provided to help guide them",
             "- Never claim objects found unless state shows found=true",
             f"- Player has found {found_count} of {total_count} objects",
         ])
