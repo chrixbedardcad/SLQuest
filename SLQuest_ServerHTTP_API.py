@@ -38,6 +38,9 @@ LOGS_ROOT = BASE_DIR / "logs"
 CHAT_ROOT = BASE_DIR / "chat"
 PROFILES_ROOT = BASE_DIR / "profiles"
 NPCS_ROOT = BASE_DIR / "npcs"
+POOL_DIR = BASE_DIR / "pools"
+POOL_FILE = POOL_DIR / "objects.json"
+PLAYER_STATE_DIR = BASE_DIR / "quests" / "player"
 NPC_BASE_DIR = NPCS_ROOT / "_base"
 NPC_BASE_SYSTEM_PATH = NPC_BASE_DIR / "system.md"
 NPC_BASE_FIRST_CONVERSATION_PATH = NPC_BASE_DIR / "first_conversation.md"
@@ -408,6 +411,69 @@ def pkg_cache_prune() -> None:
         stale = [key for key, value in PKG_CACHE.items() if value.get("expires_at", 0) < now]
         for key in stale:
             PKG_CACHE.pop(key, None)
+
+
+POOL_LOCK = threading.Lock()
+POOL_STALE_SECONDS = 600  # 10 minutes
+
+
+def load_pool() -> dict[str, Any]:
+    """Load the shared object pool."""
+    if not POOL_FILE.exists():
+        return {"objects": {}}
+    try:
+        loaded = json.loads(POOL_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"objects": {}}
+    if not isinstance(loaded, dict):
+        return {"objects": {}}
+    if not isinstance(loaded.get("objects"), dict):
+        loaded["objects"] = {}
+    return loaded
+
+
+def save_pool(pool: dict[str, Any]) -> None:
+    """Atomically save the pool."""
+    ensure_dir(POOL_DIR)
+    atomic_write_json(POOL_FILE, pool)
+
+
+def get_active_objects(
+    min_difficulty: int | None = None,
+    max_difficulty: int | None = None,
+    category: str | None = None,
+) -> list[dict[str, Any]]:
+    """Get active objects, filtering out stale (>10 min since last_seen)."""
+    pool = load_pool()
+    objects = pool.get("objects", {})
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=POOL_STALE_SECONDS)
+    active = []
+    for obj_id, obj_data in objects.items():
+        if not isinstance(obj_data, dict):
+            continue
+        last_seen_str = obj_data.get("last_seen")
+        if last_seen_str:
+            try:
+                last_seen = datetime.fromisoformat(last_seen_str.replace("Z", "+00:00"))
+                if last_seen.tzinfo is None:
+                    last_seen = last_seen.replace(tzinfo=timezone.utc)
+                if last_seen < cutoff:
+                    continue  # Stale
+            except (ValueError, TypeError):
+                continue  # Invalid timestamp
+        else:
+            continue  # No timestamp
+        # Apply filters
+        difficulty = obj_data.get("difficulty", 1)
+        if min_difficulty is not None and difficulty < min_difficulty:
+            continue
+        if max_difficulty is not None and difficulty > max_difficulty:
+            continue
+        if category is not None and obj_data.get("category") != category:
+            continue
+        active.append(obj_data)
+    return active
 
 
 def set_callback(object_key: str, npc_id: str, url: str, token: str, region: str) -> None:
@@ -2031,6 +2097,125 @@ def sl_fetch() -> Response:
     return Response(body, status=200, mimetype="text/plain")
 
 
+@app.post("/pool/register")
+def pool_register() -> tuple[Response, int]:
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
+    raw_body = request.get_data(cache=True, as_text=True) or ""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_incoming_request(
+            "/pool/register",
+            request_id,
+            "",
+            "",
+            "",
+            data,
+            raw_body,
+            note="invalid_json",
+        )
+        log_request_line(
+            "/pool/register", request_id, "", "", "", "", "400", elapsed_ms
+        )
+        return json_response(
+            {"ok": False, "error": "invalid_json", "request_id": request_id}, 400
+        )
+
+    object_id = (data.get("object_id") or "").strip()
+    object_key = (data.get("object_key") or "").strip()
+    object_name = (data.get("object_name") or "").strip()
+    region = (data.get("region") or "").strip()
+    position = (data.get("position") or "").strip()
+    difficulty = data.get("difficulty", 1)
+    hint = (data.get("hint") or "").strip()
+    found_message = (data.get("found_message") or "").strip()
+    category = (data.get("category") or "hidden").strip()
+
+    log_incoming_request(
+        "/pool/register",
+        request_id,
+        "",
+        "",
+        "",
+        data,
+        raw_body,
+        note="received",
+    )
+
+    if not object_id:
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line(
+            "/pool/register", request_id, "", "", "", "", "400", elapsed_ms
+        )
+        return json_response(
+            {"ok": False, "error": "missing_object_id", "request_id": request_id}, 400
+        )
+
+    try:
+        difficulty = int(difficulty)
+    except (TypeError, ValueError):
+        difficulty = 1
+
+    with POOL_LOCK:
+        pool = load_pool()
+        objects = pool.setdefault("objects", {})
+        objects[object_id] = {
+            "object_id": object_id,
+            "object_key": object_key,
+            "object_name": object_name,
+            "region": region,
+            "position": position,
+            "difficulty": difficulty,
+            "hint": hint,
+            "found_message": found_message,
+            "category": category,
+            "last_seen": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        save_pool(pool)
+
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line(
+        "/pool/register", request_id, "", "", "", object_id, "200", elapsed_ms
+    )
+    response_payload = {"ok": True, "object_id": object_id, "registered": True}
+    log_response_payload(
+        "/pool/register", request_id, "", "", "", 200, response_payload
+    )
+    return json_response(response_payload, 200)
+
+
+@app.get("/pool/status")
+def pool_status() -> tuple[Response, int]:
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
+
+    pool = load_pool()
+    total_objects = len(pool.get("objects", {}))
+    active_objects_list = get_active_objects()
+    active_count = len(active_objects_list)
+
+    by_difficulty: dict[int, int] = {}
+    by_category: dict[str, int] = {}
+    for obj in active_objects_list:
+        diff = obj.get("difficulty", 1)
+        by_difficulty[diff] = by_difficulty.get(diff, 0) + 1
+        cat = obj.get("category", "unknown")
+        by_category[cat] = by_category.get(cat, 0) + 1
+
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line("/pool/status", request_id, "", "", "", "", "200", elapsed_ms)
+
+    response_payload = {
+        "ok": True,
+        "total_objects": total_objects,
+        "active_objects": active_count,
+        "by_difficulty": by_difficulty,
+        "by_category": by_category,
+    }
+    return json_response(response_payload, 200)
+
+
 @app.post("/quest/event")
 def quest_event() -> tuple[Response, int]:
     start_time = time.perf_counter()
@@ -2055,10 +2240,17 @@ def quest_event() -> tuple[Response, int]:
         )
 
     avatar_key = (data.get("avatar_key") or "").strip()
-    quest_id = (data.get("quest_id") or "").strip()
+    object_id = (data.get("object_id") or "").strip()
     event = (data.get("event") or "").strip()
-    object_key = (data.get("object_key") or "").strip()
-    if not avatar_key or not quest_id or not event:
+
+    # Legacy support: object_key can be used if object_id not provided
+    if not object_id:
+        object_id = (data.get("object_key") or "").strip()
+
+    # Legacy support: quest_id field (ignore it, use object_id)
+    quest_id = (data.get("quest_id") or "").strip()
+
+    if not avatar_key or not event:
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
         log_incoming_request(
             "/quest/event",
@@ -2086,27 +2278,31 @@ def quest_event() -> tuple[Response, int]:
         note="received",
     )
 
-    QuestEngine.quest_handle_event(
-        avatar_key, quest_id, event, {"object_key": object_key}
-    )
-    definition = QuestEngine.load_definition(quest_id)
-    npc_id = (definition.get("npc_id") or "SLQuest_DefaultNPC").strip()
-    conversation_id = load_conversation_id(avatar_key, npc_id)
-    quest_context = QuestEngine.build_quest_context(avatar_key, npc_id)
-    if conversation_id and quest_context:
-        added = add_conversation_developer_item(
-            request_id,
-            conversation_id,
-            f"Quest update:\n{quest_context}",
+    # Handle event based on type
+    if event == "object_found":
+        result = QuestEngine.handle_quest_event(avatar_key, object_id)
+    else:
+        # Legacy event handling (cube_clicked, etc.)
+        result = QuestEngine.quest_handle_event(
+            avatar_key, quest_id or "dynamic", event, {"object_id": object_id, "object_key": object_id}
         )
-        if not added:
-            log_error(
-                f"quest_update_prompt_failed request_id={request_id} avatar={avatar_key} npc_id={npc_id}"
-            )
+
+    # Build quest context for conversation update
+    quest_context = QuestEngine.build_quest_context(avatar_key)
+
+    # Try to update any active conversations with quest status
+    # Note: We don't have npc_id in this context, so we can't target a specific conversation
 
     elapsed_ms = int((time.perf_counter() - start_time) * 1000)
     log_request_line("/quest/event", request_id, "", avatar_key, "", event, "200", elapsed_ms)
-    response_payload = {"ok": True}
+
+    response_payload = {
+        "ok": True,
+        "matched": result.get("matched", False),
+        "quest_completed": result.get("quest_completed", False),
+        "found_count": result.get("found_count"),
+        "total_count": result.get("total_count"),
+    }
     log_response_payload(
         "/quest/event", request_id, "", avatar_key, "", 200, response_payload
     )

@@ -1,0 +1,74 @@
+# ============================================================
+# Quest Object Configuration Examples
+# ============================================================
+# Copy one of these into a notecard named "quest_config"
+# and place it in your quest object's inventory
+# Lines starting with # are ignored
+# ============================================================
+
+# ------------------------------------------------------------
+# EXAMPLE 1: Easy hidden object (difficulty 1)
+# ------------------------------------------------------------
+object_id=green_cube
+difficulty=1
+hint=Look near the fountain
+found_message=You found the green cube!
+category=hidden
+
+# ------------------------------------------------------------
+# EXAMPLE 2: Medium difficulty object
+# ------------------------------------------------------------
+object_id=red_sphere
+difficulty=2
+hint=Check by the old oak tree
+found_message=Nice work finding the red sphere!
+category=hidden
+
+# ------------------------------------------------------------
+# EXAMPLE 3: Hard object (difficulty 3)
+# ------------------------------------------------------------
+object_id=golden_key
+difficulty=3
+hint=Hidden somewhere on the rooftop
+found_message=Incredible! You found the golden key!
+category=hidden
+
+# ------------------------------------------------------------
+# EXAMPLE 4: Collectible category
+# ------------------------------------------------------------
+object_id=ancient_coin
+difficulty=2
+hint=Near the market stalls
+found_message=You collected an ancient coin!
+category=collectible
+
+# ------------------------------------------------------------
+# EXAMPLE 5: Puzzle category
+# ------------------------------------------------------------
+object_id=puzzle_piece_1
+difficulty=1
+hint=Behind the waterfall
+found_message=Puzzle piece found!
+category=puzzle
+
+# ============================================================
+# FIELD REFERENCE
+# ============================================================
+# object_id     - Unique identifier (required, no spaces)
+# difficulty    - 1 (easy), 2 (medium), 3 (hard)
+# hint          - Clue shown to players during quest
+# found_message - Message when player touches object
+# category      - Group type: hidden, collectible, puzzle, etc.
+# ============================================================
+
+# ============================================================
+# ALTERNATIVE: Object Description Method
+# ============================================================
+# Instead of a notecard, you can put config in the object's
+# Description field (Edit > General tab) like this:
+#
+# object_id=blue_gem difficulty=2 hint=Under the bridge
+#
+# Separate values with spaces. found_message and category
+# will use defaults if not specified.
+# ============================================================

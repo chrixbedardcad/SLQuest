@@ -1,0 +1,9 @@
+# Quest Object Configuration
+# Copy this into a notecard named "quest_config" in your object's inventory
+# Lines starting with # are comments and will be ignored
+
+object_id=green_cube
+difficulty=1
+hint=Look near the fountain
+found_message=You found the green cube!
+category=hidden
