@@ -1,6 +1,8 @@
 SLQuest.env
 logs/
 chat/
+debug/
+profiles/
 __pycache__/
 *.pyc
 venv/
