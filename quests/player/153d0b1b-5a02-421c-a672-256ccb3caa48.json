@@ -1,9 +1,1 @@
-{
-  "current_quest": null,
-  "history": {
-    "quests_completed": 1,
-    "recent_objects": [
-      "blue_cube"
-    ]
-  }
-}
+{"current_quest": null, "history": {"quests_completed": 0, "recent_objects": []}}
