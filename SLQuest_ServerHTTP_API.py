@@ -56,6 +56,7 @@ CONVERSATION_ADD_ITEM_TIMEOUT_SECONDS = float(
 CALLBACKS_LOCK = threading.Lock()
 CALLBACKS: dict[tuple[str, str], dict[str, Any]] = {}
 CALLBACK_TTL_SECONDS = int(os.getenv("CALLBACK_TTL_SECONDS", "7200"))
+CALLBACKS_FILE = os.path.join(os.path.dirname(__file__), "data", "callbacks.json")
 CALLBACK_POST_TIMEOUT_SECONDS = float(os.getenv("CALLBACK_POST_TIMEOUT_SECONDS", "2.5"))
 SAFE_CALLBACK_MAX = 1400
 PKG_CACHE_LOCK = threading.Lock()
@@ -417,6 +418,40 @@ def set_callback(object_key: str, npc_id: str, url: str, token: str, region: str
             "region": region,
             "updated_at": now_utc_ts(),
         }
+    save_callbacks()
+
+
+def save_callbacks() -> None:
+    """Save callbacks to disk for persistence across restarts."""
+    try:
+        os.makedirs(os.path.dirname(CALLBACKS_FILE), exist_ok=True)
+        with CALLBACKS_LOCK:
+            data = {
+                f"{k[0]}|{k[1]}": v
+                for k, v in CALLBACKS.items()
+            }
+        with open(CALLBACKS_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        log_error(f"save_callbacks failed: {e}")
+
+
+def load_callbacks() -> None:
+    """Load callbacks from disk on startup."""
+    global CALLBACKS
+    if not os.path.exists(CALLBACKS_FILE):
+        return
+    try:
+        with open(CALLBACKS_FILE, "r") as f:
+            data = json.load(f)
+        with CALLBACKS_LOCK:
+            for key_str, entry in data.items():
+                parts = key_str.split("|", 1)
+                if len(parts) == 2:
+                    CALLBACKS[(parts[0], parts[1])] = entry
+        log_line(RUN_LOG_PATH, f"load_callbacks loaded={len(CALLBACKS)}")
+    except Exception as e:
+        log_error(f"load_callbacks failed: {e}")
 
 
 def get_callback(object_key: str, npc_id: str) -> dict[str, Any] | None:
@@ -2337,5 +2372,6 @@ if __name__ == "__main__":
 
     ensure_dir(LOGS_ROOT)
     ensure_dir(CHAT_ROOT)
+    load_callbacks()
     log_startup_status()
     serve(app, host="0.0.0.0", port=PORT)
