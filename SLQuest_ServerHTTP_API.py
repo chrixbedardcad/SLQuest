@@ -40,6 +40,7 @@ PROFILES_ROOT = BASE_DIR / "profiles"
 NPCS_ROOT = BASE_DIR / "npcs"
 POOL_DIR = BASE_DIR / "pools"
 POOL_FILE = POOL_DIR / "objects.json"
+GIFTS_FILE = POOL_DIR / "gifts.json"
 PLAYER_STATE_DIR = BASE_DIR / "quests" / "player"
 NPC_BASE_DIR = NPCS_ROOT / "_base"
 NPC_BASE_SYSTEM_PATH = NPC_BASE_DIR / "system.md"
@@ -474,6 +475,82 @@ def get_active_objects(
             continue
         active.append(obj_data)
     return active
+
+
+GIFTS_LOCK = threading.Lock()
+GIFTS_STALE_SECONDS = 600  # 10 minutes
+
+
+def load_gifts() -> dict[str, Any]:
+    """Load the gift pool."""
+    if not GIFTS_FILE.exists():
+        return {"npcs": {}}
+    try:
+        loaded = json.loads(GIFTS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"npcs": {}}
+    if not isinstance(loaded, dict):
+        return {"npcs": {}}
+    if not isinstance(loaded.get("npcs"), dict):
+        loaded["npcs"] = {}
+    return loaded
+
+
+def save_gifts(gifts: dict[str, Any]) -> None:
+    """Atomically save the gift pool."""
+    ensure_dir(POOL_DIR)
+    atomic_write_json(GIFTS_FILE, gifts)
+
+
+def get_available_gifts(npc_id: str) -> list[str]:
+    """Get active gifts for an NPC, filtering out stale registrations."""
+    gifts = load_gifts()
+    npc_data = gifts.get("npcs", {}).get(npc_id, {})
+    last_seen_str = npc_data.get("last_seen")
+    if not last_seen_str:
+        return []
+    try:
+        last_seen = datetime.fromisoformat(last_seen_str.replace("Z", "+00:00"))
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=GIFTS_STALE_SECONDS)
+        if last_seen < cutoff:
+            return []  # Stale
+    except (ValueError, TypeError):
+        return []
+    return npc_data.get("gifts", [])
+
+
+def select_gift_for_player(avatar_key: str, npc_id: str) -> str | None:
+    """Select a random gift for player, avoiding repeats."""
+    available = get_available_gifts(npc_id)
+    if not available:
+        return None
+
+    # Load player state to check what they've received
+    state = QuestEngine.load_player_state(avatar_key)
+    received = state.get("history", {}).get("gifts_received", [])
+
+    # Filter out already received gifts
+    candidates = [g for g in available if g not in received]
+    if not candidates:
+        # Player has received all gifts, allow repeats
+        candidates = available
+
+    import random
+    return random.choice(candidates)
+
+
+def record_gift_given(avatar_key: str, gift_name: str) -> None:
+    """Record that a gift was given to a player."""
+    state = QuestEngine.load_player_state(avatar_key)
+    history = state.setdefault("history", {"quests_completed": 0, "recent_objects": []})
+    gifts_received = history.setdefault("gifts_received", [])
+    if gift_name not in gifts_received:
+        gifts_received.append(gift_name)
+    # Keep last 50 gifts
+    history["gifts_received"] = gifts_received[-50:]
+    QuestEngine.save_player_state(avatar_key, state)
 
 
 def set_callback(object_key: str, npc_id: str, url: str, token: str, region: str) -> None:
@@ -2216,6 +2293,76 @@ def pool_status() -> tuple[Response, int]:
     return json_response(response_payload, 200)
 
 
+@app.post("/pool/gifts/register")
+def gifts_register() -> tuple[Response, int]:
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
+    raw_body = request.get_data(cache=True, as_text=True) or ""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line("/pool/gifts/register", request_id, "", "", "", "", "400", elapsed_ms)
+        return json_response({"ok": False, "error": "invalid_json"}, 400)
+
+    npc_id = (data.get("npc_id") or "").strip()
+    npc_key = (data.get("npc_key") or "").strip()
+    region = (data.get("region") or "").strip()
+    gifts_raw = data.get("gifts", "[]")
+
+    if not npc_id:
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        log_request_line("/pool/gifts/register", request_id, "", "", npc_id, "", "400", elapsed_ms)
+        return json_response({"ok": False, "error": "missing_npc_id"}, 400)
+
+    # Parse gifts list
+    try:
+        if isinstance(gifts_raw, str):
+            gifts_list = json.loads(gifts_raw)
+        else:
+            gifts_list = gifts_raw
+        if not isinstance(gifts_list, list):
+            gifts_list = []
+    except json.JSONDecodeError:
+        gifts_list = []
+
+    with GIFTS_LOCK:
+        gifts = load_gifts()
+        npcs = gifts.setdefault("npcs", {})
+        npcs[npc_id] = {
+            "npc_id": npc_id,
+            "npc_key": npc_key,
+            "region": region,
+            "gifts": gifts_list,
+            "last_seen": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        save_gifts(gifts)
+
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line("/pool/gifts/register", request_id, "", "", npc_id, str(len(gifts_list)), "200", elapsed_ms)
+    return json_response({"ok": True, "npc_id": npc_id, "gifts_count": len(gifts_list)}, 200)
+
+
+@app.get("/pool/gifts/status")
+def gifts_status() -> tuple[Response, int]:
+    start_time = time.perf_counter()
+    request_id = uuid4().hex[:8]
+
+    gifts = load_gifts()
+    npcs = gifts.get("npcs", {})
+
+    result = {}
+    for npc_id, npc_data in npcs.items():
+        available = get_available_gifts(npc_id)
+        result[npc_id] = {
+            "gifts": available,
+            "count": len(available),
+        }
+
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    log_request_line("/pool/gifts/status", request_id, "", "", "", "", "200", elapsed_ms)
+    return json_response({"ok": True, "npcs": result}, 200)
+
+
 @app.post("/quest/event")
 def quest_event() -> tuple[Response, int]:
     start_time = time.perf_counter()
@@ -2479,6 +2626,22 @@ def chat_async() -> tuple[Response, int]:
             actions.extend([action for action in pre["actions"] if isinstance(action, str)])
         if isinstance(post.get("actions"), list):
             actions.extend([action for action in post["actions"] if isinstance(action, str)])
+
+        # Replace QUEST_REWARD placeholder with actual selected gift
+        for i, action in enumerate(actions):
+            if action == "Give:QUEST_REWARD":
+                selected_gift = select_gift_for_player(avatar_uuid, npc_name)
+                if selected_gift:
+                    actions[i] = f"Give:{selected_gift}"
+                    record_gift_given(avatar_uuid, selected_gift)
+                    log_event(f"gift_selected avatar={avatar_uuid} gift={selected_gift}")
+                else:
+                    # No gifts available, remove the action
+                    actions[i] = ""
+                    log_event(f"gift_none_available avatar={avatar_uuid} npc={npc_name}")
+
+        # Filter out empty actions
+        actions = [a for a in actions if a]
 
         quest_pack = post.get("quest") if isinstance(post.get("quest"), dict) else None
         if not quest_pack and isinstance(pre.get("quest"), dict):

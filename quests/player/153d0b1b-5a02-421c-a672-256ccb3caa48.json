@@ -1,1 +1,9 @@
-{"current_quest": null, "history": {"quests_completed": 0, "recent_objects": []}}
+{
+  "current_quest": null,
+  "history": {
+    "quests_completed": 1,
+    "recent_objects": [
+      "green_cube"
+    ]
+  }
+}

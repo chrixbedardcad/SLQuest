@@ -1,5 +1,7 @@
 integer LM_ACTION = 9200;
-list GIVE_ALLOW = ["Blue Feather", "Green Cube Prize"];
+integer DEBUG = TRUE;
+// Items must start with "Gift_" prefix to be giveable (security measure)
+string GIFT_PREFIX = "Gift_";
 
 list splitActions(string body)
 {
@@ -43,7 +45,8 @@ string parseFirstToken(string args)
 
 integer isAllowedGive(string item)
 {
-    return llListFindList(GIVE_ALLOW, [item]) != -1;
+    // Allow items that start with GIFT_PREFIX
+    return llSubStringIndex(item, GIFT_PREFIX) == 0;
 }
 
 applyParticlePreset(string preset)
@@ -140,12 +143,27 @@ default
             else if (kind == "Give")
             {
                 string item = llStringTrim(args, STRING_TRIM);
-                if (id != NULL_KEY && item != "" && isAllowedGive(item))
+                if (DEBUG) llOwnerSay("ActionRouter: Give request item='" + item + "' to=" + (string)id);
+                if (id == NULL_KEY)
                 {
-                    if (llGetInventoryType(item) != INVENTORY_NONE)
-                    {
-                        llGiveInventory(id, item);
-                    }
+                    if (DEBUG) llOwnerSay("ActionRouter: Give failed - no target avatar");
+                }
+                else if (item == "")
+                {
+                    if (DEBUG) llOwnerSay("ActionRouter: Give failed - empty item name");
+                }
+                else if (!isAllowedGive(item))
+                {
+                    if (DEBUG) llOwnerSay("ActionRouter: Give failed - item '" + item + "' not in GIVE_ALLOW list");
+                }
+                else if (llGetInventoryType(item) == INVENTORY_NONE)
+                {
+                    if (DEBUG) llOwnerSay("ActionRouter: Give failed - item '" + item + "' not in inventory");
+                }
+                else
+                {
+                    llGiveInventory(id, item);
+                    if (DEBUG) llOwnerSay("ActionRouter: Give success - sent '" + item + "'");
                 }
             }
 @continue_action;

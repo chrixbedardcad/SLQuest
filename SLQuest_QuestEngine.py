@@ -282,6 +282,9 @@ def handle_quest_event(avatar_key: str, object_id: str) -> dict[str, Any]:
         return {"ok": True, "matched": False, "reason": "no_active_quest"}
 
     objectives = current.get("objectives", [])
+    objective_ids = [o.get("object_id") for o in objectives]
+    _log_event("quest_event_received", avatar_key, f"clicked={object_id} quest_objectives={objective_ids}")
+
     matched = False
     found_count = 0
     total_count = len(objectives)
@@ -408,7 +411,9 @@ def build_quest_context(avatar_key: str) -> str:
 
     lines.append("- Keep replies short, single message, no markdown")
 
-    return "\n".join(lines)
+    context = "\n".join(lines)
+    _log_event("build_context", avatar_key, f"context_preview={context[:200].replace(chr(10), '|')}")
+    return context
 
 
 def quest_pre_chat(avatar_key: str, npc_id: str, message: str) -> dict[str, Any]:
@@ -453,8 +458,8 @@ def quest_post_chat(avatar_key: str, npc_id: str, message: str) -> dict[str, Any
 
     if current and current.get("status") == "completed":
         if not current.get("reward_given"):
-            # Give reward
-            actions.append("Give:Quest Prize Box")
+            # Give reward - use placeholder, API will replace with actual gift
+            actions.append("Give:QUEST_REWARD")
             current["reward_given"] = True
             current["reward_given_at"] = _now_iso()
 
