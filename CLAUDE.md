@@ -55,7 +55,7 @@ curl -X POST http://localhost:8001/chat \
 
 - **SLQuest_ActionRouter.lsl**: Processes action commands from server responses (Give items, play sounds, animations, particles).
 
-- **SLQuest_QuestObject_FindGreenCube.lsl**: Quest trigger object that reports click events to server.
+- **SLQuest_QuestObject.lsl**: Generic quest object script. Reads config from `quest_config` notecard, registers with shared pool, sends `object_found` events on touch.
 
 ### Data Flow
 
@@ -69,8 +69,8 @@ curl -X POST http://localhost:8001/chat \
 
 - **npcs/**: NPC configurations. Each NPC has `system.md` (personality prompt), `config.json` (model, display name), optionally `first_conversation.md`
 - **npcs/_base/**: Base system prompt applied to all NPCs
-- **quests/definitions/**: Quest JSON definitions with LLM context
-- **quests/state/**: Per-player quest state files
+- **pools/**: Shared quest object pool (`objects.json`) - objects self-register here
+- **quests/player/**: Per-player quest state files (current quest, history)
 - **profiles/**: Cached avatar profile cards and images
 - **chat/**: Conversation history per avatar/NPC pair
 - **logs/**: Server logs and OpenAI request traces
@@ -86,6 +86,25 @@ Copy `SLQuest.env.example` to `SLQuest.env` and configure:
 
 ## LSL Guidelines
 
-- Never use `key` as a variable name in LSL; it's a reserved type keyword
+### Reserved Words
+LSL has type keywords that cannot be used as variable names:
+- `key` - UUID type (use `obj_key`, `avatar_uuid`, `query_id` instead)
+- `string`, `integer`, `float`, `vector`, `rotation`, `list` - all reserved
+
+Example of what NOT to do:
+```lsl
+string key = "abc";     // ERROR: key is reserved
+integer string = 5;     // ERROR: string is reserved
+```
+
+Correct alternatives:
+```lsl
+string obj_key = "abc";
+string param_name = "abc";
+integer str_len = 5;
+```
+
+### Other Guidelines
 - LSL scripts read `SERVER_BASE` from object description for easy configuration
 - Callback system uses link messages (LM_CB_TOKEN=9100, LM_CB_REPLY=9101, LM_ACTION=9200)
+- Quest objects use `quest_config` notecard for configuration (object_id, difficulty, hint, etc.)

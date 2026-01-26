@@ -55,14 +55,14 @@ parseNotecardLine(string line)
     {
         return;
     }
-    string key = llStringTrim(llGetSubString(line, 0, eq_pos - 1), STRING_TRIM);
-    string value = llStringTrim(llGetSubString(line, eq_pos + 1, -1), STRING_TRIM);
+    string param_name = llStringTrim(llGetSubString(line, 0, eq_pos - 1), STRING_TRIM);
+    string param_value = llStringTrim(llGetSubString(line, eq_pos + 1, -1), STRING_TRIM);
 
-    if (key == "object_id") g_object_id = value;
-    else if (key == "difficulty") g_difficulty = (integer)value;
-    else if (key == "hint") g_hint = value;
-    else if (key == "found_message") g_found_message = value;
-    else if (key == "category") g_category = value;
+    if (param_name == "object_id") g_object_id = param_value;
+    else if (param_name == "difficulty") g_difficulty = (integer)param_value;
+    else if (param_name == "hint") g_hint = param_value;
+    else if (param_name == "found_message") g_found_message = param_value;
+    else if (param_name == "category") g_category = param_value;
 }
 
 parseAllNotecardLines()
