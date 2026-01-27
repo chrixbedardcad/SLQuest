@@ -478,7 +478,7 @@ def get_active_objects(
 
 
 GIFTS_LOCK = threading.Lock()
-GIFTS_STALE_SECONDS = 600  # 10 minutes
+GIFTS_STALE_SECONDS = 900  # 15 minutes (longer than 5-min LSL registration interval)
 
 
 def load_gifts() -> dict[str, Any]:
