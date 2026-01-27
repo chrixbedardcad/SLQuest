@@ -10,7 +10,7 @@
       "hint": "Look near the fountain",
       "found_message": "You found the green cube!",
       "category": "hidden",
-      "last_seen": "2026-01-26T22:39:29+00:00"
+      "last_seen": "2026-01-27T04:18:24+00:00"
     },
     "red_cube": {
       "object_id": "red_cube",
@@ -22,7 +22,7 @@
       "hint": "Look near me between green and blue",
       "found_message": "You found the red cube!",
       "category": "hidden",
-      "last_seen": "2026-01-26T22:39:53+00:00"
+      "last_seen": "2026-01-27T04:18:27+00:00"
     },
     "blue_cube": {
       "object_id": "blue_cube",
@@ -34,7 +34,7 @@
       "hint": "Look far from me",
       "found_message": "You found the blue cube!",
       "category": "hidden",
-      "last_seen": "2026-01-26T22:40:17+00:00"
+      "last_seen": "2026-01-27T04:18:31+00:00"
     }
   }
 }
