@@ -15,3 +15,6 @@ cloudflared.log
 
 # Python venv
 .venv/
+
+# Cambot venv
+cambot/.venv/

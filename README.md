@@ -50,6 +50,10 @@ Services:
 - `slquest-profile-enricher.service` → profile enricher (default `:8002`)
 - `cloudflared.service` → Cloudflare Tunnel (routes `https://api.slquest.net` → `http://localhost:8001`)
 
+Cambot (Firestorm UI automation) lives in `cambot/`:
+- `cambot/cambot.py` → CLI automation (wmctrl/xdotool)
+- `cambot/cambot_api.py` → FastAPI wrapper (optional)
+
 Common commands:
 
 ```bash
