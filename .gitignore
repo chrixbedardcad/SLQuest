@@ -12,3 +12,6 @@ venv/
 .env.local
 cloudflared.exe
 cloudflared.log
+
+# Python venv
+.venv/

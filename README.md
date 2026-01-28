@@ -29,17 +29,49 @@ CORRADE_API_KEY=
 CORRADE_TIMEOUT_SECONDS=4.0
 ```
 
-Run the server:
+Run the server (manual):
 
 ```bash
 python SLQuest_ServerHTTP_API.py
 ```
 
-Run the profile enricher service (separate process):
+Run the profile enricher service (manual, separate process):
 
 ```bash
 python enrich/profile_enricher_server.py
 ```
+
+## Running as Linux services (recommended for "live" use)
+
+This repo can be run under systemd so it survives reboots and is easy to restart.
+
+Services:
+- `slquest.service` → main HTTP API (default `PORT=8001`)
+- `slquest-profile-enricher.service` → profile enricher (default `:8002`)
+- `cloudflared.service` → Cloudflare Tunnel (routes `https://api.slquest.net` → `http://localhost:8001`)
+
+Common commands:
+
+```bash
+# Main API
+sudo systemctl status slquest
+sudo systemctl restart slquest
+sudo journalctl -u slquest -f
+
+# Profile enricher
+sudo systemctl status slquest-profile-enricher
+sudo systemctl restart slquest-profile-enricher
+sudo journalctl -u slquest-profile-enricher -f
+
+# Cloudflare tunnel
+sudo systemctl status cloudflared
+sudo systemctl restart cloudflared
+sudo journalctl -u cloudflared -f
+```
+
+Note:
+- The systemd unit files live in `/etc/systemd/system/` (local machine config).
+- Keep secrets in `SLQuest.env` and **do not** commit it.
 
 ## LSL script setup
 
