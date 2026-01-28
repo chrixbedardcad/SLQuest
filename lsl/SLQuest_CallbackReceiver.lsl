@@ -1,4 +1,4 @@
-string SERVER_BASE = "https://delaware-caroline-pointing-dana.trycloudflare.com";
+string SERVER_BASE = "https://api.slquest.net";
 string SERVER_BASE_FALLBACK = "";
 string NPC_ID = "";
 integer LM_CB_TOKEN = 9100;

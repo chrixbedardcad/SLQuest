@@ -1,4 +1,4 @@
-string SERVER_BASE = "https://delaware-caroline-pointing-dana.trycloudflare.com";
+string SERVER_BASE = "https://api.slquest.net";
 string NPC_ID = "";
 string PROFILE_PAGE_BASE = "https://world.secondlife.com/resident/";
 // NOTE: Place SLQuest_CallbackReceiver.lsl in the same linkset so callbacks can be routed.

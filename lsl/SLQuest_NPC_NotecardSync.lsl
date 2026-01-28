@@ -3,7 +3,7 @@
 // NOTE: Notecard lines are limited to ~1024 bytes each; wrap long text across multiple lines.
 // NOTE: Do NOT expect large responses in LSL; the server should return short JSON only.
 
-string SERVER_URL = "https://delaware-caroline-pointing-dana.trycloudflare.com";
+string SERVER_URL = "https://api.slquest.net";
 string SERVER_URL_FALLBACK = "";
 string ADMIN_TOKEN = "";
 string NPC_ID = "";

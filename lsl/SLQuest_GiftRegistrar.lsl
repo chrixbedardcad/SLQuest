@@ -2,7 +2,7 @@
 // Scans inventory for gift items and registers them with the server
 // Place this script in the NPC object alongside other SLQuest scripts
 
-string SERVER_BASE = "https://delaware-caroline-pointing-dana.trycloudflare.com";
+string SERVER_BASE = "https://api.slquest.net";
 string GIFT_PREFIX = "Gift_";  // Items starting with this prefix are registered as gifts
 float REGISTER_INTERVAL = 300.0;  // Re-register every 5 minutes
 
