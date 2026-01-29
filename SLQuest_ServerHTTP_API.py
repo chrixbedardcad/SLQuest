@@ -478,7 +478,9 @@ def get_active_objects(
 
 
 GIFTS_LOCK = threading.Lock()
-GIFTS_STALE_SECONDS = 900  # 15 minutes (longer than 5-min LSL registration interval)
+# How long a gift registration stays "active" without re-registering.
+# Keep this generous for dev sessions; otherwise rewards can fail with "no gifts available".
+GIFTS_STALE_SECONDS = 7 * 24 * 60 * 60  # 7 days
 
 
 def load_gifts() -> dict[str, Any]:
