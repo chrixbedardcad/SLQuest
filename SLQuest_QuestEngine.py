@@ -16,7 +16,10 @@ POOL_DIR = BASE_DIR / "pools"
 POOL_FILE = POOL_DIR / "objects.json"
 PLAYER_STATE_DIR = BASE_DIR / "quests" / "player"
 
-POOL_STALE_SECONDS = 600  # 10 minutes
+# How long an object stays "active" in the shared pool without re-registering.
+# In practice, in-world objects may not ping frequently, and dev sessions can have gaps.
+# Keep this generous to avoid "no_active_objects" during testing.
+POOL_STALE_SECONDS = 7 * 24 * 60 * 60  # 7 days
 MAX_RECENT_OBJECTS = 20
 DEFAULT_QUEST_COUNT = 2
 
