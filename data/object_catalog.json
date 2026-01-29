@@ -1,0 +1,64 @@
+{
+  "catalog": {
+    "Clue_Spoon": {
+      "label": "Spoon",
+      "tags": ["kitchen", "care", "routine"],
+      "memoryLine": "Stirring… again and again. Someone depended on the rhythm."
+    },
+    "Clue_ChefsKnife": {
+      "label": "Chef's Knife",
+      "tags": ["kitchen", "precision", "danger"],
+      "memoryLine": "My hand knew exactly where to go. One slip and it’s red."
+    },
+    "Clue_Basket": {
+      "label": "Wicker Basket",
+      "tags": ["market", "gathering", "travel"],
+      "memoryLine": "Weight on my arm. Coins. Familiar faces pretending not to look."
+    },
+    "Clue_Keyring": {
+      "label": "Keyring",
+      "tags": ["keys", "access", "rules", "responsibility"],
+      "memoryLine": "Doors. Rules. The feeling of being trusted… or trapped."
+    },
+    "Clue_Ticket": {
+      "label": "Ticket Stub",
+      "tags": ["travel", "escape", "deadline"],
+      "memoryLine": "Time printed in ink. Leaving before someone could stop me."
+    },
+    "Clue_Armband": {
+      "label": "Stitched Armband",
+      "tags": ["medic", "blood", "duty", "counting"],
+      "memoryLine": "Bandages. Breathing. Counting… don’t stop counting."
+    },
+    "Clue_Goggles": {
+      "label": "Workshop Goggles",
+      "tags": ["workshop", "sparks", "hands", "precision", "metal"],
+      "memoryLine": "Hot metal. The smell that sticks in your hair."
+    },
+    "Clue_Notebook": {
+      "label": "Burnt Notebook",
+      "tags": ["notes", "secrets", "evidence", "guilt"],
+      "memoryLine": "My words survived the fire. That feels… unfair."
+    },
+    "Clue_Badge": {
+      "label": "Scratched Badge",
+      "tags": ["law", "authority", "guilt"],
+      "memoryLine": "A name I hated. A job I did anyway."
+    },
+    "Clue_Map": {
+      "label": "Folded Map",
+      "tags": ["map", "travel", "secrets"],
+      "memoryLine": "Routes. Shortcuts. The pen marks weren’t for sightseeing."
+    },
+    "Clue_Locket": {
+      "label": "Empty Locket",
+      "tags": ["love", "loss", "promise"],
+      "memoryLine": "There was a face here. Why would I remove it?"
+    },
+    "Clue_Trowel": {
+      "label": "Garden Trowel",
+      "tags": ["garden", "growth", "burial"],
+      "memoryLine": "Dirt under nails. Planting… or hiding."
+    }
+  }
+}

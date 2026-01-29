@@ -14,6 +14,9 @@ LOGS_ROOT = BASE_DIR / "logs"
 LOG_PATH = LOGS_ROOT / "quest_engine.log"
 POOL_DIR = BASE_DIR / "pools"
 POOL_FILE = POOL_DIR / "objects.json"
+DATA_DIR = BASE_DIR / "data"
+IDENTITIES_FILE = DATA_DIR / "identities.json"
+OBJECT_CATALOG_FILE = DATA_DIR / "object_catalog.json"
 PLAYER_STATE_DIR = BASE_DIR / "quests" / "player"
 
 # How long an object stays "active" in the shared pool without re-registering.
@@ -22,6 +25,7 @@ PLAYER_STATE_DIR = BASE_DIR / "quests" / "player"
 POOL_STALE_SECONDS = 7 * 24 * 60 * 60  # 7 days
 MAX_RECENT_OBJECTS = 20
 DEFAULT_QUEST_COUNT = 2
+DEFAULT_QUEST_TYPE = "identity_mystery"  # falls back to classic if no tagged objects
 
 
 def _now_ts() -> int:
@@ -74,19 +78,55 @@ def load_pool() -> dict[str, Any]:
     return loaded
 
 
+def load_identities() -> dict[str, Any]:
+    """Load identity definitions for story-driven quests."""
+    if not IDENTITIES_FILE.exists():
+        return {"identities": {}}
+    try:
+        loaded = json.loads(IDENTITIES_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"identities": {}}
+    if not isinstance(loaded, dict):
+        return {"identities": {}}
+    if not isinstance(loaded.get("identities"), dict):
+        loaded["identities"] = {}
+    return loaded
+
+
+def load_object_catalog() -> dict[str, Any]:
+    """Load optional design-time metadata for pool objects (tags, memory lines)."""
+    if not OBJECT_CATALOG_FILE.exists():
+        return {"catalog": {}}
+    try:
+        loaded = json.loads(OBJECT_CATALOG_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"catalog": {}}
+    if not isinstance(loaded, dict):
+        return {"catalog": {}}
+    if not isinstance(loaded.get("catalog"), dict):
+        loaded["catalog"] = {}
+    return loaded
+
+
 def get_active_objects(
     min_difficulty: int | None = None,
     max_difficulty: int | None = None,
     category: str | None = None,
     exclude_objects: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Get active objects, filtering out stale (>10 min since last_seen)."""
+    """Get active objects, filtering out stale registrations.
+
+    Objects are registered by in-world scripts into pools/objects.json.
+    Optionally, we enrich them from pools/object_catalog.json (tags, memoryLine).
+    """
     pool = load_pool()
     objects = pool.get("objects", {})
+    catalog = load_object_catalog().get("catalog", {})
+
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=POOL_STALE_SECONDS)
     exclude_set = set(exclude_objects or [])
-    active = []
+    active: list[dict[str, Any]] = []
 
     for obj_id, obj_data in objects.items():
         if not isinstance(obj_data, dict):
@@ -116,7 +156,19 @@ def get_active_objects(
         if category is not None and obj_data.get("category") != category:
             continue
 
-        active.append(obj_data)
+        # Enrich from catalog (do not overwrite runtime fields like object_key/region)
+        enriched = dict(obj_data)
+        lookup_id = enriched.get("object_id") or obj_id
+        cat = catalog.get(lookup_id)
+        if isinstance(cat, dict):
+            if "tags" not in enriched and isinstance(cat.get("tags"), list):
+                enriched["tags"] = cat.get("tags")
+            if "memoryLine" not in enriched and isinstance(cat.get("memoryLine"), str):
+                enriched["memoryLine"] = cat.get("memoryLine")
+            if "object_name" in cat and enriched.get("object_name") in (None, ""):
+                enriched["object_name"] = cat.get("object_name")
+
+        active.append(enriched)
 
     return active
 
@@ -165,10 +217,58 @@ def save_player_state(avatar_key: str, state: dict[str, Any]) -> None:
 # Quest Generation
 # -----------------------------------------------------------------------------
 
+def _weighted_sample_no_replace(items: list[dict[str, Any]], weights: list[float], k: int) -> list[dict[str, Any]]:
+    """Weighted sample without replacement."""
+    if k <= 0 or not items:
+        return []
+    if len(items) != len(weights):
+        raise ValueError("items/weights length mismatch")
+
+    pool = list(zip(items, weights))
+    chosen: list[dict[str, Any]] = []
+
+    for _ in range(min(k, len(pool))):
+        total = sum(max(0.0, w) for _, w in pool)
+        if total <= 0:
+            # Fallback to uniform sample of remaining
+            chosen.append(random.choice([it for it, _ in pool]))
+            # remove first matching
+            for idx, (it, _) in enumerate(pool):
+                if it is chosen[-1]:
+                    pool.pop(idx)
+                    break
+            continue
+
+        r = random.random() * total
+        acc = 0.0
+        pick_idx = 0
+        for idx, (it, w) in enumerate(pool):
+            acc += max(0.0, w)
+            if acc >= r:
+                pick_idx = idx
+                break
+        chosen.append(pool[pick_idx][0])
+        pool.pop(pick_idx)
+
+    return chosen
+
+
+def _score_object_for_identity(obj: dict[str, Any], tag_weights: dict[str, int]) -> int:
+    tags = obj.get("tags")
+    if not isinstance(tags, list):
+        return 0
+    score = 0
+    for t in tags:
+        if isinstance(t, str):
+            score += int(tag_weights.get(t, 0))
+    return score
+
+
 def generate_quest(
     avatar_key: str,
     difficulty: int | None = None,
     count: int | None = None,
+    quest_type: str | None = None,
 ) -> dict[str, Any]:
     """Generate a quest from the shared pool.
 
@@ -199,6 +299,9 @@ def generate_quest(
         count = min(quests_completed + 1, 3)
         count = max(1, count)
 
+    if quest_type is None:
+        quest_type = DEFAULT_QUEST_TYPE
+
     # Get available objects
     active_objects = get_active_objects(
         min_difficulty=difficulty,
@@ -218,16 +321,50 @@ def generate_quest(
         _log_event("generate_quest_failed", avatar_key, "no_active_objects")
         return {"ok": False, "error": "no_active_objects"}
 
-    # Random select
-    selected = random.sample(active_objects, min(count, len(active_objects)))
+    selected: list[dict[str, Any]] = []
+    identity_id: str | None = None
+    identity_label: str | None = None
+
+    # Identity-mystery quest: pick an identity, then prefer objects whose tags fit.
+    if quest_type == "identity_mystery":
+        identities = load_identities().get("identities", {})
+        if isinstance(identities, dict) and identities:
+            identity_id = random.choice(list(identities.keys()))
+            identity = identities.get(identity_id, {}) if isinstance(identity_id, str) else {}
+            if isinstance(identity, dict):
+                identity_label = identity.get("label") if isinstance(identity.get("label"), str) else identity_id
+                tag_weights = identity.get("tagWeights") if isinstance(identity.get("tagWeights"), dict) else {}
+
+                scored: list[tuple[dict[str, Any], int]] = []
+                for obj in active_objects:
+                    score = _score_object_for_identity(obj, tag_weights)
+                    scored.append((obj, score))
+
+                # Prefer positive-score objects; allow fallback if insufficient.
+                positive = [(o, s) for (o, s) in scored if s > 0]
+                pool_items = [o for (o, _) in positive]
+                pool_weights = [float(s) for (_, s) in positive]
+
+                if len(pool_items) >= 1:
+                    # If we don't have enough, we'll fill the rest uniformly from remaining active objects.
+                    selected = _weighted_sample_no_replace(pool_items, pool_weights, min(count, len(pool_items)))
+
+    # Classic/random fallback
+    if len(selected) < min(count, len(active_objects)):
+        remaining = [o for o in active_objects if o not in selected]
+        needed = min(count, len(active_objects)) - len(selected)
+        if needed > 0:
+            selected.extend(random.sample(remaining, min(needed, len(remaining))))
 
     # Build objectives
-    objectives = []
+    objectives: list[dict[str, Any]] = []
     for obj in selected:
         objectives.append({
             "object_id": obj.get("object_id"),
             "object_name": obj.get("object_name", obj.get("object_id", "")),
             "hint": obj.get("hint", ""),
+            "tags": obj.get("tags", []),
+            "memoryLine": obj.get("memoryLine", ""),
             "found": False,
             "found_at": None,
         })
@@ -240,6 +377,9 @@ def generate_quest(
 
     new_quest = {
         "quest_id": quest_id,
+        "quest_type": quest_type,
+        "identity_id": identity_id,
+        "identity_label": identity_label,
         "difficulty": quest_difficulty,
         "generated_at": _now_iso(),
         "objectives": objectives,
@@ -358,14 +498,19 @@ def build_quest_context(avatar_key: str) -> str:
     status = current.get("status", "active")
     reward_given = current.get("reward_given", False)
 
+    quest_type = current.get("quest_type") or "classic"
+    identity_label = current.get("identity_label") or current.get("identity_id")
+
     # Separate found and unfound objectives
-    found_objects = []
-    unfound_objects = []
+    found_objects: list[dict[str, Any]] = []
+    unfound_objects: list[dict[str, Any]] = []
     for obj in objectives:
         obj_info = {
             "object_id": obj.get("object_id", ""),
             "object_name": obj.get("object_name", obj.get("object_id", "")),
             "hint": obj.get("hint", ""),
+            "tags": obj.get("tags", []),
+            "memoryLine": obj.get("memoryLine", ""),
         }
         if obj.get("found"):
             found_objects.append(obj_info)
@@ -375,6 +520,8 @@ def build_quest_context(avatar_key: str) -> str:
     lines = [
         "QUEST_STATUS:",
         f"quest_id={current.get('quest_id', '')}",
+        f"quest_type={quest_type}",
+        f"identity={identity_label}" if identity_label else "identity=none",
         f"status={status}",
         f"difficulty={current.get('difficulty', 1)}",
         f"found={found_count}/{total_count}",
@@ -385,7 +532,11 @@ def build_quest_context(avatar_key: str) -> str:
         lines.append("FOUND_OBJECTS:")
         for obj in found_objects:
             obj_name = obj.get("object_name", obj.get("object_id", "unknown"))
-            lines.append(f"- {obj_name} (FOUND)")
+            mem = (obj.get("memoryLine") or "").strip()
+            if quest_type == "identity_mystery" and mem:
+                lines.append(f"- {obj_name} (FOUND) | memory=\"{mem}\"")
+            else:
+                lines.append(f"- {obj_name} (FOUND)")
 
     # List unfound objects so NPC knows what to tell player
     if unfound_objects and status == "active":
@@ -403,14 +554,21 @@ def build_quest_context(avatar_key: str) -> str:
     lines.append("QUEST_RULES:")
 
     if status == "active":
-        lines.extend([
+        rules = [
             "- Quest is active, player is searching for objects",
             "- FOUND_OBJECTS shows what player already found - acknowledge these",
             "- REMAINING_OBJECTIVES shows what player still needs to find",
             "- Use the hints provided to help guide them to remaining objects",
             "- Never claim an object is found unless it's listed under FOUND_OBJECTS",
             f"- Player has found {found_count} of {total_count} objects",
-        ])
+        ]
+        if quest_type == "identity_mystery":
+            rules.extend([
+                "- This is an identity-mystery quest: build a coherent story around the found objects",
+                "- Use the memory lines from FOUND_OBJECTS as glitchy 'remembered' fragments",
+                "- Do NOT reveal the identity directly; hint at it subtly until quest completion",
+            ])
+        lines.extend(rules)
     elif status == "completed" and not reward_given:
         lines.extend([
             "- All objects found! Quest is complete",

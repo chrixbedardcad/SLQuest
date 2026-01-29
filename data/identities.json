@@ -1,0 +1,106 @@
+{
+  "identities": {
+    "chef": {
+      "label": "Chef / Caretaker",
+      "tagWeights": {
+        "kitchen": 3,
+        "care": 2,
+        "routine": 2,
+        "precision": 1,
+        "market": 1,
+        "danger": 1
+      },
+      "memoryTone": "warm, practical, a little tired",
+      "revealBeats": [
+        "There was heat… and a rhythm. Stir, taste, adjust.",
+        "My hands knew cuts like music. Efficient. Careful.",
+        "People came back because it felt safe. Like home."
+      ]
+    },
+    "medic": {
+      "label": "Medic / Field Nurse",
+      "tagWeights": {
+        "medic": 3,
+        "blood": 3,
+        "duty": 2,
+        "counting": 2,
+        "trauma": 2,
+        "care": 1
+      },
+      "memoryTone": "urgent, focused, compassionate",
+      "revealBeats": [
+        "Count the breaths. Don’t stop counting.",
+        "Bandage tight. Hands steady.",
+        "I stayed when other people left."
+      ]
+    },
+    "mechanic": {
+      "label": "Mechanic / Builder",
+      "tagWeights": {
+        "workshop": 3,
+        "sparks": 3,
+        "precision": 2,
+        "hands": 2,
+        "metal": 2,
+        "access": 1
+      },
+      "memoryTone": "dry humor, competent, hands-on",
+      "revealBeats": [
+        "Hot metal. Sparks like tiny fireflies.",
+        "If it rattles, it’s wrong. If it hums, it’s right.",
+        "I fixed things because it was simpler than fixing people."
+      ]
+    },
+    "courier": {
+      "label": "Courier / Runaway",
+      "tagWeights": {
+        "travel": 3,
+        "deadline": 3,
+        "escape": 2,
+        "map": 2,
+        "market": 1,
+        "secrets": 1
+      },
+      "memoryTone": "restless, alert, slightly paranoid",
+      "revealBeats": [
+        "Time printed in ink. Leaving before someone could stop me.",
+        "Routes. Shortcuts. Don’t look back.",
+        "I carried something that wasn’t mine to carry."
+      ]
+    },
+    "keyholder": {
+      "label": "Keyholder / Guard",
+      "tagWeights": {
+        "keys": 3,
+        "rules": 3,
+        "access": 2,
+        "responsibility": 2,
+        "authority": 1,
+        "guilt": 1
+      },
+      "memoryTone": "stern, protective, conflicted",
+      "revealBeats": [
+        "Doors. Rules. The feeling of being trusted… or trapped.",
+        "I said ‘no’ for a living.",
+        "Sometimes I unlocked the wrong door on purpose."
+      ]
+    },
+    "detective": {
+      "label": "Detective / Conflicted Cop",
+      "tagWeights": {
+        "law": 3,
+        "authority": 2,
+        "guilt": 2,
+        "notes": 2,
+        "secrets": 2,
+        "evidence": 2
+      },
+      "memoryTone": "quiet, sharp, morally tired",
+      "revealBeats": [
+        "Names in a notebook. Lines you can’t uncross.",
+        "A badge that felt heavier every day.",
+        "I solved the wrong problem perfectly."
+      ]
+    }
+  }
+}
