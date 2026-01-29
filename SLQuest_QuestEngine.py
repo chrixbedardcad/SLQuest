@@ -438,11 +438,16 @@ def quest_pre_chat(avatar_key: str, npc_id: str, message: str) -> dict[str, Any]
     # Detect quest request keywords
     lower_msg = message.lower()
     wants_quest = any(kw in lower_msg for kw in [
-        "quest", "adventure", "mission", "task", "find", "hunt", "search",
-        "something to do", "need help", "bored", "challenge",
-        # Affirmative responses (when NPC offers a quest)
-        "sure", "yes", "yeah", "yep", "ok", "okay", "let's go", "let's do it",
-        "give me", "start", "begin", "ready", "i want", "i'd like",
+        # Direct intent
+        "quest", "adventure", "mission", "task", "something to do", "bored", "challenge",
+        # Typical quest verbs
+        "find", "hunt", "search",
+        # When NPC offers a quest, users often answer like this
+        "sure", "yes", "yeah", "yep", "ok", "okay", "of course", "why not",
+        "let's go", "lets go", "let's do it", "lets do it",
+        "give me", "start", "begin", "ready", "i want", "i'd like", "i would like",
+        # If NPC asks for a style choice ("spooky or chill"), treat the choice as acceptance
+        "chill", "spooky",
     ])
 
     # Auto-generate if no quest and player seems to want one
