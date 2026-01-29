@@ -76,6 +76,7 @@ sudo journalctl -u cloudflared -f
 Note:
 - The systemd unit files live in `/etc/systemd/system/` (local machine config).
 - Keep secrets in `SLQuest.env` and **do not** commit it.
+- Once you run under systemd, **do not** also start the server manually (it will collide on port 8001). Use `systemctl restart slquest` instead.
 
 ## LSL script setup
 
